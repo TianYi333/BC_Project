@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "jlinkgdbtarget",
+            "request": "launch",
+            "name": "J-Link Debug",
+            "cwd": "${workspaceFolder}",
+            "runEntry": "main",
+            "deviceName": "STM32H743XG",
+            "deviceCore": "Cortex‑M7",
+            "imagesAndSymbols": [
+                {
+                    "imageFileName": "${workspaceFolder}/build/debug/H743_VS_GCC_IDE.elf"
+                }
+            ]
+        }
+    ]
+}

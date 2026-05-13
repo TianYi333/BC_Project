@@ -1,0 +1,20 @@
+git add 文件名.txt
+git add .
+提交所有修改的和新建的数据暂存区
+git commit -m"描述"
+提交添加的文件
+git push -u origin main
+将本地仓库推送到远程仓库（Github）中
+
+#提交时转换为LF，检出时转换为CRLF
+$ git config --global core.autocrlf true
+这样在检出代码时，换行会被转换成回车和换行
+
+
+如果你是 Windows 程序员，且正在开发仅运行在 Windows 上的项目，
+可以设置 false 取消此功能，把回车保留在版本库中：
+#提交检出均不转换
+$ git config --global core.autocrlf false
+
+#提交包含混合换行符的文件时给出警告
+git config --global core.safecrlf warn

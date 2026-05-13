@@ -1,0 +1,14 @@
+{
+    "configurations": [
+        {
+            "name": "STM32",
+            "compilerPath": "D:/APP/GCC-ARM/bin/arm-none-eabi-gcc.exe",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "compileCommands": "${workspaceFolder}/build/debug/compile_commands.json"
+        }
+    ],
+    "version": 4
+}

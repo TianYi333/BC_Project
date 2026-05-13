@@ -1,0 +1,10 @@
+{
+    "configurations": [
+        {
+            "name": "CMake-STM32",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "intelliSenseMode": "gcc-arm"
+        }
+    ],
+    "version": 4
+}
