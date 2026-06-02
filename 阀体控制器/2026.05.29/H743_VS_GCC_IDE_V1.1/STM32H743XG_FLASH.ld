@@ -1,0 +1,282 @@
+/*
+******************************************************************************
+**
+
+**  File        : LinkerScript.ld
+**
+**  Author		: STM32CubeMX
+**
+**  Abstract    : Linker script for STM32H743ZGTx series
+**                1024Kbytes FLASH and 1056Kbytes RAM
+**
+**                Set heap size, stack size and stack location according
+**                to application requirements.
+**
+**                Set memory bank area and size if external memory is used.
+**
+**  Target      : STMicroelectronics STM32
+**
+**  Distribution: The file is distributed “as is,” without any warranty
+**                of any kind.
+**
+*****************************************************************************
+** @attention
+**
+** <h2><center>&copy; COPYRIGHT(c) 2025 STMicroelectronics</center></h2>
+**
+** Redistribution and use in source and binary forms, with or without modification,
+** are permitted provided that the following conditions are met:
+**   1. Redistributions of source code must retain the above copyright notice,
+**      this list of conditions and the following disclaimer.
+**   2. Redistributions in binary form must reproduce the above copyright notice,
+**      this list of conditions and the following disclaimer in the documentation
+**      and/or other materials provided with the distribution.
+**   3. Neither the name of STMicroelectronics nor the names of its contributors
+**      may be used to endorse or promote products derived from this software
+**      without specific prior written permission.
+**
+** THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+** AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+** IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+** DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+** FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+** DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+** SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+** CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+** OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+** OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+**
+*****************************************************************************
+*/
+
+/* Entry Point */
+ENTRY(Reset_Handler)
+
+/* Specify the memory areas */
+MEMORY
+{
+DTCMRAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
+RAM (xrw)      : ORIGIN = 0x24000000, LENGTH = 512K
+RAM_D2 (xrw)      : ORIGIN = 0x30000000, LENGTH = 288K
+RAM_D3 (xrw)      : ORIGIN = 0x38000000, LENGTH = 64K
+ITCMRAM (xrw)      : ORIGIN = 0x00000000, LENGTH = 64K
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
+FLASH2 (rx)      : ORIGIN = 0x8100000, LENGTH = 512K
+}
+
+/* ########################################################### */
+/* 👉 修复 1：栈顶移到 RAM */
+/* ########################################################### */
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+
+_Min_Heap_Size = 0x1200;
+_Min_Stack_Size = 0x1000;
+
+/* Define output sections */
+SECTIONS
+{
+  .isr_vector :
+  {
+    . = ALIGN(4);
+    KEEP(*(.isr_vector))
+    . = ALIGN(4);
+  } >FLASH
+
+  /* ============================================== */
+  /* ✅ 在这里插入你需要的 DTCMRAM 段，完全匹配你的代码 */
+  /* ============================================== */
+  ._DTC_FSRAM (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(._DTC_FSRAM)
+    . = ALIGN(4);
+  } >DTCMRAM
+
+  .text :
+  {
+    . = ALIGN(4);
+    *(.text)
+    *(.text*)
+    *(.glue_7)
+    *(.glue_7t)
+    *(.eh_frame)
+
+    KEEP (*(.init))
+    KEEP (*(.fini))
+
+    . = ALIGN(4);
+    _etext = .;
+  } >FLASH
+
+  .rodata :
+  {
+    . = ALIGN(4);
+    *(.rodata)
+    *(.rodata*)
+    . = ALIGN(4);
+  } >FLASH
+
+  .ARM.extab (READONLY) :
+  {
+    . = ALIGN(4);
+    *(.ARM.extab* .gnu.linkonce.armextab.*)
+    . = ALIGN(4);
+  } >FLASH
+
+  .ARM (READONLY) :
+  {
+    . = ALIGN(4);
+    __exidx_start = .;
+    *(.ARM.exidx*)
+    __exidx_end = .;
+    . = ALIGN(4);
+  } >FLASH
+
+  .preinit_array (READONLY) :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN (__preinit_array_start = .);
+    KEEP (*(.preinit_array*))
+    PROVIDE_HIDDEN (__preinit_array_end = .);
+    . = ALIGN(4);
+  } >FLASH
+
+  .init_array (READONLY) :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT(.init_array.*)))
+    KEEP (*(.init_array*))
+    PROVIDE_HIDDEN (__init_array_end = .);
+    . = ALIGN(4);
+  } >FLASH
+
+  .fini_array (READONLY) :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN (__fini_array_start = .);
+    KEEP (*(SORT(.fini_array.*)))
+    KEEP (*(.fini_array*))
+    PROVIDE_HIDDEN (__fini_array_end = .);
+    . = ALIGN(4);
+  } >FLASH
+
+  _sidata = LOADADDR(.data);
+
+  /* ########################################################### */
+  /* 👉 修复 2：.data 移到 RAM */
+  /* ########################################################### */
+  .data :
+  {
+    . = ALIGN(4);
+    _sdata = .;
+    *(.data)
+    *(.data*)
+    *(.RamFunc)
+    *(.RamFunc*)
+
+    . = ALIGN(4);
+  } >RAM AT> FLASH
+
+  .tdata : ALIGN(4)
+  {
+    *(.tdata .tdata.* .gnu.linkonce.td.*)
+    . = ALIGN(4);
+    _edata = .;
+    PROVIDE(__data_end = .);
+    PROVIDE(__tdata_end = .);
+  } >RAM AT> FLASH
+
+  PROVIDE( __tdata_start = ADDR(.tdata) );
+  PROVIDE( __tdata_size = __tdata_end - __tdata_start );
+
+  PROVIDE( __data_start = ADDR(.data) );
+  PROVIDE( __data_size = __data_end - __data_start );
+
+  PROVIDE( __tdata_source = LOADADDR(.tdata) );
+  PROVIDE( __tdata_source_end = LOADADDR(.tdata) + SIZEOF(.tdata) );
+  PROVIDE( __tdata_source_size = __tdata_source_end - __tdata_source );
+
+  PROVIDE( __data_source = LOADADDR(.data) );
+  PROVIDE( __data_source_end = __tdata_source_end );
+  PROVIDE( __data_source_size = __data_source_end - __data_source );
+
+  /* ########################################################### */
+  /* 👉 修复 3：.tbss 移到 RAM */
+  /* ########################################################### */
+  .tbss (NOLOAD) : ALIGN(4)
+  {
+    _sbss = .;
+    __bss_start__ = _sbss;
+    *(.tbss .tbss.*)
+    . = ALIGN(4);
+    PROVIDE( __tbss_end = . );
+  } >RAM
+
+  PROVIDE( __tbss_start = ADDR(.tbss) );
+  PROVIDE( __tbss_size = __tbss_end - __tbss_start );
+  PROVIDE( __tbss_offset = ADDR(.tbss) - ADDR(.tdata) );
+
+  PROVIDE( __tls_base = __tdata_start );
+  PROVIDE( __tls_end = __tbss_end );
+  PROVIDE( __tls_size = __tls_end - __tls_base );
+  PROVIDE( __tls_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss)) );
+  PROVIDE( __tls_size_align = (__tls_size + __tls_align - 1) & ~(__tls_align - 1) );
+  PROVIDE( __arm32_tls_tcb_offset = MAX(8, __tls_align) );
+  PROVIDE( __arm64_tls_tcb_offset = MAX(16, __tls_align) );
+
+  /* ########################################################### */
+  /* 👉 修复 4：.bss 移到 RAM */
+  /* ########################################################### */
+  .bss (NOLOAD) : ALIGN(4)
+  {
+    *(.bss)
+    *(.bss*)
+    *(COMMON)
+
+    . = ALIGN(4);
+    _ebss = .;
+    __bss_end__ = _ebss;
+    PROVIDE( __bss_end = .);
+  } >RAM
+
+  PROVIDE( __non_tls_bss_start = ADDR(.bss) );
+
+  PROVIDE( __bss_start = __tbss_start );
+  PROVIDE( __bss_size = __bss_end - __bss_start );
+
+  /* ########################################################### */
+  /* 👉 修复 5：堆和栈移到 RAM */
+  /* ########################################################### */
+    /* ETH DMA 收发描述符 放到RAM_D2 */
+  .RxDecripSection (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.RxDecripSection)
+    . = ALIGN(4);
+  } > RAM_D2
+
+  .TxDecripSection (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.TxDecripSection)
+    . = ALIGN(4);
+  } > RAM_D2
+  
+  ._user_heap_stack (NOLOAD) :
+  {
+    . = ALIGN(8);
+    PROVIDE ( end = . );
+    PROVIDE ( _end = . );
+    . = . + _Min_Heap_Size;
+    . = . + _Min_Stack_Size;
+    . = ALIGN(8);
+  } >RAM
+
+  /DISCARD/ :
+  {
+    libc.a:* ( * )
+    libm.a:* ( * )
+    libgcc.a:* ( * )
+  }
+}
