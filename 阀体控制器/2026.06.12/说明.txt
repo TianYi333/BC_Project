@@ -1,0 +1,7 @@
+1，模拟注油任务，任务结果上报正常
+2，添加停止任务逻辑
+3，但因
+_TASK_OBJECT task_object_list[5] = {{.task_status = 0, .inject_id = 0, .val = 0}, {.task_status = 0, .inject_id = 0, .val = 0}, {.task_status = 0, .inject_id = 0, .val = 0}, {.task_status = 0, .inject_id = 0, .val = 0}, {.task_status = 0, .inject_id = 0, .val = 0}};
+extern __attribute__((section("._DTC_FSRAM")))       _TASK_OBJECT task_object_list[5];
+逻辑存在问题，导致上电后人物列表内的参数并不会清零，需要手动清零
+4，因系统运行逻辑一直处于初始化中，导致系统状态一直为ain_sys_status.is_Busy = 1；故现在任务请求时手动改为0。
