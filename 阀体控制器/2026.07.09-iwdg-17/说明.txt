@@ -1,0 +1,14 @@
+修复链接脚本段
+._D3_DMA_SWRAM (NOLOAD) :
+{
+    . = ALIGN(4);
+    *(._D3_DMA_SWRAM)
+    . = ALIGN(4);
+} >RAM_D3
+
+._DTC_FSRAM (NOLOAD) :
+{
+    . = ALIGN(4);
+    *(._DTC_FSRAM)       /* 捕获所有标记 ._DTC_FSRAM 的全局变量 */
+    . = ALIGN(4);
+} >DTCMRAM

@@ -1,0 +1,5 @@
+修改FreeModbus部分的portevent.c/portserial.c，以及mbif.c文件
+修改ethernetif.c文件的void HAL_ETH_MspInit(ETH_HandleTypeDef* ethHandle)内的HAL_NVIC_SetPriority(ETH_IRQn, 6, 0)优先级
+以及扩大#define INTERFACE_THREAD_STACK_SIZE ( 4096 )内存
+
+扩大总堆大小1200-20000
