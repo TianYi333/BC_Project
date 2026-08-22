@@ -1,0 +1,4 @@
+修改低速时钟为内部时钟
+RTC初始化增加 HAL_RTCEx_EnableBypassShadow(&hrtc);
+
+修改cubeMX里的MPU以及GPIO中断优先级
