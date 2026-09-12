@@ -1,0 +1,10 @@
+添加SYS_CONFIG_T  cfg;参数校验功能
+将
+// 传感器4mA/20mA 原始ADC校准固定值（编译期固定，不再存入FlashDB配置参数）
+#define PRESS_CAL_4MA_RAW   12710.0f   // 压力传感器 4mA 对应原始ADC值
+#define PRESS_CAL_20MA_RAW  63549.0f   // 压力传感器 20mA 对应原始ADC值
+#define TEMP_CAL_4MA_RAW    12710.0f   // 温度传感器 4mA 对应原始ADC值
+#define TEMP_CAL_20MA_RAW   63549.0f   // 温度传感器 20mA 对应原始ADC值
+替换为全局变量
+
+以及多处BUG

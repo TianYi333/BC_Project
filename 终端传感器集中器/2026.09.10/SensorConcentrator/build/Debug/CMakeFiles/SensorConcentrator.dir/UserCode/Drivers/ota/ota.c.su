@@ -1,0 +1,9 @@
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:57:12:ota_feed_chunk	32	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:98:13:ota_reset_session	8	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:109:13:ota_on_complete	56	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:158:14:tftp_open_cb	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:183:12:tftp_read_cb	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:191:12:tftp_write_cb	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:212:13:tftp_close_cb	16	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:221:5:ota_handle_upgrade_start	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/ota/ota.c:282:6:ota_app_confirm	48	static

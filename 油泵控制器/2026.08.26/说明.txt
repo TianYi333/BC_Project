@@ -1,0 +1,5 @@
+修复状态恢复签名检验错误的BUG
+增加电机启动停止主动上报
+UserCode/Drivers/ETH/net_comm_task.c：减少粗暴 tcp_abort
+safe_tcp_close() 改为先 tcp_close()，失败再 fallback 到 tcp_abort()，尽量减少 pending 在 ETH DMA 中的 pbuf 被 pcb purge 二次释放的风险。
+tcp_connected_cb() 错误分支删除了 tcp_abort(tpcb)——lwIP 回调里 pcb 所有权已归 lwIP，用户不应再 abort，只清全局引用即可，由 errf (tcp_error_callback) 释放。

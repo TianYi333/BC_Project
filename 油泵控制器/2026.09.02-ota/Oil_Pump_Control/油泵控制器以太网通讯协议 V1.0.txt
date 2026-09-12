@@ -1,0 +1,524 @@
+#### discover_request（网关发送）设备发现报文
+**用途**：网关主动扫描网络中的设备，用于发现未注册的设备。
+json
+{
+    "type": "discover_request",
+    "domain": "FACTORY_OIL",
+    "gateway_mac": "00:11:22:33:44:01",
+    "ts": 1746601200,
+    "seq": 1001,
+    "sign": "7F2D91C0"
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"discover_request" |
+| domain | string | 是 | 域标识，固定为"FACTORY_OIL"，用于隔离不同系统 |
+| gateway_mac | string | 是 | 网关的MAC地址，设备用于识别网关 |
+| ts | int64 | 是 | Unix时间戳（秒），用于防重放和时间同步 |
+| seq | int | 是 | 网关消息序列号，递增，用于防重放 |
+| sign | string | 是 | HMAC-SHA256签名前8位（大写），用于消息认证 |
+
+
+#### discover_response（设备响应）
+**用途**：设备响应网关的发现请求，宣告自己的存在和能力。
+json
+{
+    "type": "discover_response",
+    "mac": "00:80:E1:30:00:2F",
+    "sn": "5102002F0030",
+    "model": "LUB-PUMP-V1.0",
+    "firmware_ver": "1.0.0",
+    "cur_ip": "192.168.1.100",
+    "ts": 1746601201,
+    "seq": 2001,
+    "sign": "3A7F2D11"
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"discover_response" |
+| mac | string | 是 | 设备的MAC地址，作为设备的硬件唯一标识 |
+| sn | string | 是 | 设备序列号，作为设备的业务唯一标识 |
+| model | string | 是 | 设备型号，用于识别设备类型和能力 |
+| firmware_ver | string | 是 | 固件版本号，用于版本管理和升级判断 |
+| cur_ip | string | 是 | 设备当前使用的IP地址 |
+| ts | int64 | 是 | Unix时间戳（秒） |
+| seq | int | 是 | 设备消息序列号，递增 |
+| sign | string | 是 | HMAC-SHA256签名前8位 |
+
+
+#### device_online（设备发送）设备上线报文
+**用途**：设备上电或重启后主动宣告上线，网关收到后更新设备状态。
+json
+{
+    "type": "device_online",
+    "mac": "00:80:E1:30:00:2F",
+    "sn": "5102002F0030",
+    "model": "LUB-PUMP-V1.0",
+    "firmware_ver": "1.0.0",
+    "cur_ip": "192.168.1.100",
+    "is_reboot": true,
+    "reason": 0,
+    "ts": 1746601201,
+    "seq": 2001,
+    "sign": "3A7F2D11"
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"device_online" |
+| mac | string | 是 | 设备MAC地址 |
+| sn | string | 是 | 设备序列号 |
+| model | string | 是 | 设备型号 |
+| firmware_ver | string | 是 | 固件版本 |
+| cur_ip | string | 是 | 当前IP地址 |
+| is_reboot | bool | 是 | 是否为重启：true=重启，false=首次上电 |
+| reason | int | 是 | 重启原因：0-上电，1-看门狗复位，2-软件重启 |
+| ts | int64 | 是 | Unix时间戳 |
+| seq | int | 是 | 自增序列号 |
+| sign | string | 是 | HMAC-SHA256前8位 |
+
+
+#### register（设备发送） 设备注册报文
+**用途**：TCP连接建立后立即发送，用于绑定设备与TCP连接，是业务通信的前置条件。
+json
+{
+    "type": "register",
+    "device_id": "5102002F0030",
+    "mac": "00:80:E1:30:00:2F",
+    "model": "LUB-PUMP-V1.0",
+    "firmware_ver": "1.0.0",
+    "ts": 1746601200,
+    "seq": 1,
+    "sign": "3A7F2D11"
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"register" |
+| device_id | string | 是 | 设备唯一标识（通常使用SN），用于业务层识别 |
+| mac | string | 是 | MAC地址，用于物理层识别 |
+| model | string | 是 | 设备型号 |
+| firmware_ver | string | 是 | 固件版本 |
+| ts | int64 | 是 | Unix时间戳 |
+| seq | int | 是 | 自增序列号，**设备重启后必须从1开始** |
+| sign | string | 是 | HMAC-SHA256前8位 |
+
+**重要说明**：
+- 设备必须在TCP连接建立后的1秒内发送register报文
+- 网关收到register后才会将设备标记为在线状态
+- 网关会检测seq=1来识别设备重启，并重置序列号管理
+
+
+#### heartbeat（设备发送）心跳报文
+**用途**：定期保活，上报设备运行时状态。
+json
+{
+    "type": "heartbeat",
+    "device_id": "5102002F0030",
+    "device_status": {
+	"sys_start": 1,
+        "sys_warning": 0,
+        "sensor_status": 0，
+        "sys_fault_bit": 0,
+        "pressure_mpa": 2150,
+        "oil_temp_c": 4520,
+        "liquid_level_pct": 7800,
+        "valve_state": 0
+    },
+    "ts": 1746601240,
+    "seq": 2004,
+    "sign": "9E2278C3"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string |  消息类型标识，固定为"heartbeat" |
+| device_id | string | 设备标识 |
+| device_status | object | 设备运行状态（即时状态） |
+| device_status.sys_start| int |整机工作状态 |
+| device_status.sys_warning | int | 系统告警：0 = 无警告，1 = 有警告 |
+| device_status.sensor_status |int|传感器综合状态：1 就绪，0 故障 |
+| device_status.sys_fault_bit | int | 整机故障位图 uint8_t |
+| device_status.pressure_mpa |int | 系统压力 MPa * 100 |
+| device_status.oil_temp_c| int | 油液温度 ℃ * 100 |
+| device_status.liquid_level_pct| int  | 液位百分比 * 100 |
+| device_status.valve_state| int | 阀芯状态：0 关闭，1 打开 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+#### heartbeat_ack（网关响应）
+**用途**：网关对心跳的确认响应，提供时间同步。
+json
+{
+    "type": "heartbeat_ack",
+    "device_id": "5102002F0030",
+    "ts": 1746601240,
+    "seq": 1005,
+    "sign": "4B8E1F7A",
+    "server_time": 1746601240,
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"heartbeat_ack" |
+| device_id | string | 是 | 设备标识，与心跳中的device_id对应 |
+| ts | int64 | 是 | 网关当前Unix时间戳，用于消息防重放 |
+| seq | int | 是 | 网关自增序列号，用于防重放 |
+| sign | string | 是 | HMAC-SHA256前8位，用于消息认证 |
+| server_time | int64 | 是 | 网关时间戳，设备用于同步本地时间 |
+
+
+#### state_request（网关发送）状态请求
+**用途**：网关主动查询设备的详细状态。
+json
+{
+    "type": "state_request",
+    "device_id": "5102002F0030",
+    "query_type": 0,
+    "ts": 1746601240,
+    "seq": 1003,
+    "sign": "8E1172D1"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string | 消息类型标识，固定为"state_request" |
+| device_id | string | 设备标识 |
+| query_type | int  | 查询类型，0表示查询运行状态，1表示查询配置信息 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+#### state_response（设备响应）
+**用途**：设备响应状态查询请求，返回详细状态信息。
+1，如果查询类型为0，则回复除消息类型type与心跳报文一致
+json
+{
+    "type": "state_response",
+    "device_id": "5102002F0030",
+    "device_status": {
+	"sys_start": 1,
+        "sys_warning": 0,
+        "sensor_status": 0，
+        "sys_fault_bit": 0,
+        "pressure_mpa": 2150,
+        "oil_temp_c": 4520,
+        "liquid_level_pct": 7800,
+        "valve_state": 0
+    },
+    "ts": 1746601240,
+    "seq": 2004,
+    "sign": "9E2278C3"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string |  消息类型标识，固定为"state_response" |
+| device_id | string | 设备标识 |
+| device_status | object | 设备运行状态（即时状态） |
+| device_status.sys_start| int |整机工作状态 |
+| device_status.sys_warning | int | 系统告警：0 = 无警告，1 = 有警告 |
+| device_status.sensor_status |int|传感器综合状态：1 就绪，0 故障 |
+| device_status.sys_fault_bit | int | 整机故障位图 uint8_t |
+| device_status.pressure_mpa |  int  | 系统压力 MPa  * 100 |
+| device_status.oil_temp_c|  int  | 油液温度 ℃  * 100 |
+| device_status.liquid_level_pct|  int  | 液位百分比  * 100 |
+| device_status.valve_state| int | 阀芯状态：0 关闭，1 打开 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+2，如果查询类型为1，则回复
+json
+{
+    "type": "state_response",
+    "device_id": "5102002F0030",
+    "device_config": {
+	"ref_pressure": 1000,
+        "max_pressure": 4000,
+	"press_hysteresis": 100,
+        "overpress_margin": 500，
+        "max_motor_speed": 3000,
+        "min_motor_speed": 500,
+        "max_oil_temp": 1000,
+        "min_liquid_level": 1000,
+        "pid_kp": 100
+        "pid_ki": 100,
+        "pid_kd":100,
+        "modbus_addr": 1,
+        "modbus_baud_sel": 6
+    },
+    "ts": 1746601240,
+    "seq": 2004,
+    "sign": "9E2278C3"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string |  消息类型标识，固定为"state_response" |
+| device_id | string | 设备标识 |
+| device_config | object | 设备控制参数状态 |
+| device_config.ref_pressure| int |基准压力 * 100 MPa |
+| device_config.max_pressure | int | 最高保护压力 * 100 MPa |
+| device_config.press_hysteresis |int|压力控制回差 * 100 MPa |
+| device_config.overpress_margin | int | 超压安全裕量 * 100 MPa |
+| device_config.max_motor_speed | int | 最大允许转速 RPM |
+| device_config.min_motor_speed |int | 最小允许转速 RPM |
+| device_config.max_oil_temp|int| 最高油温保护 * 100 ℃ |
+| device_config.min_liquid_level| int | 最低液位保护 * 100 % |
+| device_config.pid_kp| int | KP * 100 |
+| device_config.pid_ki | int | KI * 100 |
+| device_config.pid_kd|int | KD * 100 |
+| device_config.modbus_addr| int | 本机从站地址 |
+| device_config.modbus_baud_sel| int | 波特率选择码 1~6 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+####remote_control（网关发送）远程控制
+**用途**：网关主动修改系统状态。
+json
+{
+    "type": "remote_control",
+    "device_id": "5102002F0030",
+    "sys_start": 0,
+    "valve_state": 0,
+    "fault_reset_req": 0,
+    "ts": 1746601240,
+    "seq": 1003,
+    "sign": "8E1172D1"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string | 消息类型标识，固定为"state_request" |
+| device_id | string | 设备标识 |
+| sys_start | int  | 远程系统模式修改，4=强制停机(系统状态修改为4设置/调试模式)；0=恢复自动(系统状态为0) |
+| valve_state | int  | 远程泄压阀手动控制，0=关闭；1=打开（存在故障时无法修改） |
+| fault_reset_req | int  | 写入1清除故障，写入0无效 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+####config_set_req（网关发送）配置参数修改
+**用途**：网关主动修改设备控制参数。
+json
+{
+    "type": "config_set_req",
+    "device_id": "5102002F0030",
+    "device_config": {
+	"ref_pressure": 1000,
+        "max_pressure": 4000,
+	"press_hysteresis": 100,
+        "overpress_margin": 500，
+        "max_motor_speed": 3000,
+        "min_motor_speed": 500,
+        "max_oil_temp": 1000,
+        "min_liquid_level": 1000,
+        "pid_kp": 100
+        "pid_ki": 100,
+        "pid_kd":100,
+        "modbus_addr": 1,
+        "modbus_baud_sel": 6
+    },
+    "ts": 1746601240,
+    "seq": 2004,
+    "sign": "9E2278C3"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string |  消息类型标识，固定为"config_set_req" |
+| device_id | string | 设备标识 |
+| device_config | object | 设备控制参数状态 |
+| device_config.ref_pressure| int |基准压力 * 100 MPa |
+| device_config.max_pressure | int | 最高保护压力 * 100 MPa |
+| device_config.press_hysteresis |int|压力控制回差 * 100 MPa |
+| device_config.overpress_margin | int | 超压安全裕量 * 100 MPa |
+| device_config.max_motor_speed | int | 最大允许转速 RPM |
+| device_config.min_motor_speed |int | 最小允许转速 RPM |
+| device_config.max_oil_temp|int| 最高油温保护 * 100 ℃ |
+| device_config.min_liquid_level| int | 最低液位保护 * 100 % |
+| device_config.pid_kp| int | KP * 100 |
+| device_config.pid_ki | int | KI * 100 |
+| device_config.pid_kd|int | KD * 100 |
+| device_config.modbus_addr| int | 本机从站地址 |
+| device_config.modbus_baud_sel| int | 波特率选择码 1~6 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+####config_set_resp（设备响应）
+**用途**：设备响应修改设备控制参数。
+json
+{
+    "type": "config_set_req",
+    "device_id": "5102002F0030",
+    "device_config": {
+	"ref_pressure": 1000,
+        "max_pressure": 4000,
+	"press_hysteresis": 100,
+        "overpress_margin": 500，
+        "max_motor_speed": 3000,
+        "min_motor_speed": 500,
+        "max_oil_temp": 1000,
+        "min_liquid_level": 1000,
+        "pid_kp": 100
+        "pid_ki": 100,
+        "pid_kd":100,
+        "modbus_addr": 1,
+        "modbus_baud_sel": 6
+    },
+    "ts": 1746601240,
+    "seq": 2004,
+    "sign": "9E2278C3"
+}
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | string |  消息类型标识，固定为"config_set_req" |
+| device_id | string | 设备标识 |
+| device_config | object | 设备控制参数状态 |
+| device_config.ref_pressure| int |基准压力 * 100 MPa |
+| device_config.max_pressure | int | 最高保护压力 * 100 MPa |
+| device_config.press_hysteresis |int|压力控制回差 * 100 MPa |
+| device_config.overpress_margin | int | 超压安全裕量 * 100 MPa |
+| device_config.max_motor_speed | int | 最大允许转速 RPM |
+| device_config.min_motor_speed |int | 最小允许转速 RPM |
+| device_config.max_oil_temp|int| 最高油温保护 * 100 ℃ |
+| device_config.min_liquid_level| int | 最低液位保护 * 100 % |
+| device_config.pid_kp| int | KP * 100 |
+| device_config.pid_ki | int | KI * 100 |
+| device_config.pid_kd|int | KD * 100 |
+| device_config.modbus_addr| int | 本机从站地址 |
+| device_config.modbus_baud_sel| int | 波特率选择码 1~6 |
+| ts | int64 | Unix时间戳 |
+| seq | int | 自增序列号 |
+| sign | string | HMAC-SHA256前8位 |
+
+
+#### config_set（网关发送） 配网参数报文
+**用途**：网关向设备下发网络配置参数，用于IP地址分配和网关信息同步。
+json
+{
+    "type": "config_set",
+    "target_mac": "11:22:33:44:55:66",
+    "target_sn": "5102002F0030",
+    "ip": "192.168.1.101",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.1.1",
+    "host_ip": "192.168.1.1",
+    "host_mac": "00:11:22:33:44:01",
+    "ts": 1746601205,
+    "seq": 1002,
+    "sign": "11B8E7D2"
+}
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 是 | 消息类型标识，固定为"config_set" |
+| target_mac | string | 是 | 目标设备MAC地址，用于确认接收方 |
+| target_sn | string | 是 | 目标设备序列号 |
+| ip | string | 是 | 分配给设备的IP地址 |
+| netmask | string | 是 | 子网掩码 |
+| gateway | string | 是 | 网关地址 |
+| dns | string | 否 | DNS服务器地址（可选） |
+| host_ip | string | 是 | 网关自身IP地址，设备用于连接网关 |
+| host_mac | string | 是 | 网关MAC地址 |
+| udp_port | int | 是 | UDP端口，固定为9527 |
+| ts | int64 | 是 | Unix时间戳 |
+| seq | int | 是 | 自增序列号 |
+| sign | string | 是 | HMAC-SHA256前8位 |
+
+
+####device_reboot 设备重启指令 
+用途：网关主动下发设备重启指令。
+json
+{
+    "type": "device_reboot",
+    "device_id": "5102002F0030",
+    "delay": 5,
+    "reason": "ota_update",
+    "ts": 1746601200,
+    "seq": 2006,
+    "sign": "9E2278C3"
+}
+字段	类型	必填	说明
+type	string	是	消息类型标识，固定为"device_reboot"
+device_id	string	是	目标设备标识
+delay	int	否	延迟重启时间（秒），默认0立即重启
+reason	string	否	重启原因：manual-手动，ota_update-OTA升级，config-配置生效，fault-故障恢复
+ts	int64	是	Unix时间戳
+seq	int	是	网关消息序列号，递增
+sign	string	是	HMAC-SHA256签名前8位
+3.3.14 设备重启响应 (device_reboot_ack) 【V2.7 新增】
+用途：设备确认收到重启指令。
+
+
+####device_reboot_ack 设备重启指令回复
+用途：回复网关下发设备重启指令。
+json
+{
+    "type": "device_reboot_ack",
+    "device_id": "5102002F0030",
+    "status": 0,
+    "message": "reboot_accepted",
+    "estimated_duration": 30,
+    "ts": 1746601201,
+    "seq": 2007,
+    "sign": "3A7F2D11"
+}
+字段	类型	必填	说明
+type	string	是	消息类型标识，固定为"device_reboot_ack"
+device_id	string	是	设备标识
+status	int	是	0-接受重启，1-拒绝重启，2-设备忙碌
+message	string	否	状态描述
+estimated_duration	int	否	预计重启耗时（秒）
+ts	int64	是	Unix时间戳
+seq	int	是	设备消息序列号，递增
+sign	string	是	HMAC-SHA256签名前8位
+3.3.15 设备重启结果 (device_reboot_result) 【V2.7 新增】
+用途：设备重启完成后主动上报结果。
+
+
+####设备重启结果 (device_reboot_result)
+用途：设备重启完成后主动上报结果。
+json
+{
+    "type": "device_reboot_result",
+    "device_id": "5102002F0030",
+    "result": 0,
+    "message": "reboot_success",
+    "uptime": 45,
+    "reason": "ota_update",
+    "ts": 1746601240,
+    "seq": 2001,
+    "sign": "9E2278C3"
+}
+字段	类型	必填	说明
+type	string	是	消息类型标识，固定为"device_reboot_result"
+device_id	string	是	设备标识
+result	int	是	0-重启成功，1-重启失败
+message	string	否	结果描述
+uptime	int	否	重启后运行时长（秒）
+reason	string	否	重启原因，与指令中的reason对应
+ts	int64	是	Unix时间戳
+seq	int	是	设备消息序列号，递增
+sign	string	是	HMAC-SHA256签名前8位
+
+
+####电机启停事件上报 (motor_event_report)
+用途：设备电机启动 / 停止事件发生时主动上报告警事件。
+json
+{
+    "type": "motor_event_report",
+    "device_id": "5102002F0030",
+    "event": 1,
+    "tick_ts": 1746601241,
+    "ts": 1746601241,
+    "seq": 1010,
+    "sign": "71D3AC29"
+}
+字段	类型	必填	说明
+type		string	是	消息类型标识，固定为"motor_event_report"
+device_id	string	是	设备标识
+event		int		是	事件：1=MOTOR_EVT_START 电机启动；2=MOTOR_EVT_STOP 电机停止
+tick_ts		int64	是	Unix 秒 UTC 时间戳**，对应结构体`tick`字段
+ts			int64	是	Unix时间戳
+seq			int		是	设备消息序列号，递增
+sign			string	是	HMAC-SHA256签名前8位

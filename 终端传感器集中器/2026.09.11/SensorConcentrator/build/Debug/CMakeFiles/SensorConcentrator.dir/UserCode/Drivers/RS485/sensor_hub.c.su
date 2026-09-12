@@ -1,0 +1,9 @@
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:40:13:sensorhub_push_frame	88	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:61:17:modbus_crc16	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:79:6:HAL_UARTEx_RxEventCallback	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:104:6:SensorHub_Init	16	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:144:6:SensorHub_GetPortHw	24	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:165:16:sensorhub_parse_frame	56	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:223:6:SensorHub_Task	120	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:296:8:SensorHub_Query	32	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/RS485/sensor_hub.c:326:8:SensorHub_WriteReg	32	static

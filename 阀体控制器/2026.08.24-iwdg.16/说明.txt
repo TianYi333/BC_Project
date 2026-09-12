@@ -1,0 +1,1 @@
+uint8_t start_running(void)添加模式判断，以防将设置页面设置好的设置模式切换回去

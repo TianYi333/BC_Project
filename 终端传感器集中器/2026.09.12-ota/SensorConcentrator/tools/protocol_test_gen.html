@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SensorConcentrator 协议报文生成器</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --line:#e3e8ef; --txt:#1f2937;
+    --muted:#6b7280; --accent:#2563eb; --accent2:#0e7490; --ok:#16a34a;
+    --warn:#d97706; --code:#0f172a; --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 16px 60px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  .badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .b-up{color:var(--accent2);background:#ecfeff}
+  .b-dn{color:var(--accent);background:#eff6ff}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px}
+  @media(max-width:680px){.grid{grid-template-columns:1fr}}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+  label .help{color:var(--warn)}
+  input,select{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff;color:var(--txt)}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .row{margin-bottom:10px}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px}
+  button{cursor:pointer;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600}
+  button.ghost{background:#fff;color:var(--accent)}
+  button:active{transform:translateY(1px)}
+  .typepick{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .typepick label{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 11px;cursor:pointer;margin:0;font-size:13px;color:var(--txt)}
+  .typepick label:hover{border-color:var(--accent)}
+  .typepick input{width:auto}
+  textarea{width:100%;min-height:130px;border:1px solid var(--line);border-radius:8px;padding:10px;font-family:var(--mono);font-size:12.5px;color:var(--code);background:#0f172a;color:#e2e8f0;resize:vertical}
+  .canon{background:#fff;color:var(--code);border:1px dashed var(--line);border-radius:8px;padding:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;margin-top:6px;max-height:160px;overflow:auto}
+  .meta{font-size:12px;color:var(--muted);margin:6px 0 0}
+  .status{font-size:13px;font-weight:600}
+  .status.ok{color:var(--ok)} .status.err{color:#dc2626}
+  .note{font-size:12px;color:var(--muted);margin-top:8px}
+  code{background:#eef2f7;padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SensorConcentrator 协议报文生成器</h1>
+  <p class="sub">自动按固件 <code>net_comm_task.c</code> 的规范化原文生成带 HMAC-SHA256 签名的 JSON 报文，可直接粘贴到网络调试助手发送。</p>
+
+  <!-- 全局设置 -->
+  <div class="card">
+    <h2>① 全局设置</h2>
+    <div class="grid">
+      <div class="row"><label>HMAC 密钥</label><input id="g_hmac" value="0123456789abcdef0123456789abcdef" /></div>
+      <div class="row"><label>device_id</label><input id="g_device_id" value="511300280043" /></div>
+      <div class="row"><label>mac</label><input id="g_mac" value="00:80:E1:43:00:28" /></div>
+      <div class="row"><label>model</label><input id="g_model" value="SENSOR-HUB-V1.0" /></div>
+      <div class="row"><label>firmware_ver</label><input id="g_fw" value="1.0.0" /></div>
+      <div class="row"><label>sn（=device_id）</label><input id="g_sn" value="511300280043" /></div>
+      <div class="row"><label>cur_ip</label><input id="g_ip" value="192.168.0.120" /></div>
+    </div>
+  </div>
+
+  <!-- 选择类型 -->
+  <div class="card">
+    <h2>② 选择报文类型</h2>
+    <div class="typepick" id="typepick"></div>
+  </div>
+
+  <!-- 动态字段 -->
+  <div class="card">
+    <h2>③ 填写字段 <span id="dirBadge"></span></h2>
+    <div class="grid" id="fields"></div>
+    <div class="toolbar">
+      <button id="genBtn">生成报文</button>
+      <button class="ghost" id="copyBtn">复制 JSON</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <!-- 输出 -->
+  <div class="card">
+    <h2>④ 生成结果</h2>
+    <label>签名原文（用于对照固件日志 / 排查 sign 不一致）</label>
+    <div class="canon" id="canon"></div>
+    <label style="margin-top:10px">下发 JSON（含 sign）</label>
+    <textarea id="out" readonly></textarea>
+    <div class="meta" id="meta"></div>
+    <div class="note">说明：<b>device→host</b> 的报文由设备发出，这里生成的仅用于喂给你的上位机/服务端做<b>验签与解析自测</b>；设备本身接收 host→device 的 4 类 TCP 命令（device_reboot / upgrade_start / sensor_data_ack / mode_set_req）以及网关→设备的 config_set（UDP）。<br>
+    <b>✅ 签名约定</b>：按用户要求，<code>ts</code> 在<b>所有报文</b>（含签名源串与下发 JSON）中均为<b>数字</b>，二者一致。"签名原文"框展示的就是固件 sign 源串。</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============ 纯 JS SHA-256 + HMAC（无外部依赖，离线可用） ============ */
+function sha256bytes(msg){
+  const K=new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const ror=(x,n)=>((x>>>n)|(x<<(32-n)))>>>0;
+  const l=msg.length, bitLen=l*8;
+  const total=((l+72)&~63);
+  const buf=new Uint8Array(total); buf.set(msg); buf[l]=0x80;
+  const dv=new DataView(buf.buffer);
+  dv.setUint32(total-4, bitLen>>>0, false);
+  dv.setUint32(total-8, Math.floor(bitLen/0x100000000), false);
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  const w=new Uint32Array(64);
+  for(let off=0;off<total;off+=64){
+    for(let i=0;i<16;i++) w[i]=dv.getUint32(off+i*4,false);
+    for(let i=16;i<64;i++){
+      const s0=ror(w[i-15],7)^ror(w[i-15],18)^(w[i-15]>>>3);
+      const s1=ror(w[i-2],17)^ror(w[i-2],19)^(w[i-2]>>>10);
+      w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;
+    }
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+    for(let i=0;i<64;i++){
+      const S1=ror(e,6)^ror(e,11)^ror(e,25);
+      const ch=(e&f)^((~e)&g);
+      const t1=(h+S1+ch+K[i]+w[i])>>>0;
+      const S0=ror(a,2)^ror(a,13)^ror(a,22);
+      const maj=(a&b)^(a&c)^(b&c);
+      const t2=(S0+maj)>>>0;
+      h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;
+    }
+    h0=(h0+a)>>>0;h1=(h1+b)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+h)>>>0;
+  }
+  const out=new Uint8Array(32); const ov=new DataView(out.buffer);
+  ov.setUint32(0,h0,false);ov.setUint32(4,h1,false);ov.setUint32(8,h2,false);ov.setUint32(12,h3,false);
+  ov.setUint32(16,h4,false);ov.setUint32(20,h5,false);ov.setUint32(24,h6,false);ov.setUint32(28,h7,false);
+  return out;
+}
+function hmacSHA256(keyBytes,msgBytes){
+  const BS=64;
+  if(keyBytes.length>BS) keyBytes=sha256bytes(keyBytes);
+  const k=new Uint8Array(BS); k.set(keyBytes);
+  const oK=new Uint8Array(BS), iK=new Uint8Array(BS);
+  for(let i=0;i<BS;i++){ oK[i]=k[i]^0x5c; iK[i]=k[i]^0x36; }
+  const inner=sha256bytes(concat(iK,msgBytes));
+  return sha256bytes(concat(oK,inner));
+}
+function concat(a,b){ const r=new Uint8Array(a.length+b.length); r.set(a); r.set(b,a.length); return r; }
+function computeSign(canonical,key){
+  const enc=new TextEncoder();
+  const h=hmacSHA256(enc.encode(key),enc.encode(canonical));
+  let s=""; for(let i=0;i<4;i++) s+=("0"+h[i].toString(16)).slice(-2);
+  return s.toUpperCase();
+}
+
+/* ============ 规范化原文构造（严格对齐固件 net_comm_task.c） ============ */
+const cstr=(k,v)=>({"k":k,"s":'"'+k+'":"'+(v===undefined?"":v)+'"'});
+const cnum=(k,v)=>({"k":k,"s":'"'+k+'":'+(v===""||v===undefined?"0":v)});
+const craw=(k,raw)=>({"k":k,"s":'"'+k+'":'+raw});
+const obj=(pairs)=>'{'+pairs.map(p=>p.s).join(',')+'}';
+const sortPairs=(arr)=>arr.slice().sort((a,b)=>a.k<b.k?-1:a.k>b.k?1:0).map(p=>p.s);
+
+/* ============ 类型定义 ============
+ * 每个类型提供两个构造器：
+ *   outSrc  —— 生成的"下发 JSON"（ts 为数字）
+ *   signSrc —— 固件计算 sign 用的"规范化原文"
+ * 按用户约定：ts 在所有报文中均为「数字」，故 outSrc 与 signSrc 的 ts 都写成数字，
+ * 二者现已完全一致（sign 源串不再用 uint64_to_str 转字符串）。
+ */
+function rebootBuild(v){
+  const p=[];
+  if(String(v.delay).trim()!=="")p.push(cnum("delay",v.delay));
+  p.push(cstr("device_id",v.device_id));
+  if(String(v.reason).trim()!=="")p.push(cstr("reason",v.reason));
+  p.push(cnum("seq",v.seq)); p.push(cnum("ts",v.ts)); p.push(cstr("type","device_reboot"));
+  return '{'+p.map(x=>x.s).join(',')+'}';
+}
+const TYPES={
+  register:{dir:"device→host (TCP)",fields:[
+      {id:"device_id",g:"device_id"},{id:"firmware_ver",g:"firmware_ver"},
+      {id:"mac",g:"mac"},{id:"model",g:"model"},
+      {id:"seq",num:true,def:1},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("device_id",v.device_id),cstr("firmware_ver",v.firmware_ver),
+      cstr("mac",v.mac),cstr("model",v.model),cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","register")]),
+    outSrc:v=>obj([cstr("device_id",v.device_id),cstr("firmware_ver",v.firmware_ver),
+      cstr("mac",v.mac),cstr("model",v.model),cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","register")])},
+  device_online:{dir:"device→host (UDP广播)",fields:[
+      {id:"cur_ip",g:"ip"},{id:"firmware_ver",g:"firmware_ver"},
+      {id:"is_reboot",select:["true","false"],def:"false"},{id:"mac",g:"mac"},
+      {id:"model",g:"model"},{id:"reason",num:true,def:0},
+      {id:"seq",num:true,def:1},{id:"sn",g:"sn"},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("cur_ip",v.cur_ip),cstr("firmware_ver",v.firmware_ver),
+      craw("is_reboot",v.is_reboot),cstr("mac",v.mac),cstr("model",v.model),
+      cnum("reason",v.reason),cnum("seq",v.seq),cstr("sn",v.sn),cnum("ts",v.ts),cstr("type","device_online")]),
+    outSrc:v=>obj([cstr("cur_ip",v.cur_ip),cstr("firmware_ver",v.firmware_ver),
+      craw("is_reboot",v.is_reboot),cstr("mac",v.mac),cstr("model",v.model),
+      cnum("reason",v.reason),cnum("seq",v.seq),cstr("sn",v.sn),cnum("ts",v.ts),cstr("type","device_online")])},
+  device_reboot:{dir:"host→device (TCP:50010)",fields:[
+      {id:"device_id",g:"device_id"},{id:"seq",num:true,def:1},{id:"ts",num:true,def:1788192008},
+      {id:"delay",num:true,def:"",optional:true},{id:"reason",str:true,def:"",optional:true}],
+    signSrc:v=>rebootBuild(v), outSrc:v=>rebootBuild(v)},
+  upgrade_start:{dir:"host→device (TCP:50010)",fields:[
+      {id:"device_id",g:"device_id"},{id:"new_len",num:true,def:123456},{id:"new_crc32",num:true,def:439041101},
+      {id:"seq",num:true,def:1},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("device_id",v.device_id),cnum("new_crc32",v.new_crc32),cnum("new_len",v.new_len),
+      cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","upgrade_start")]),
+    outSrc:v=>obj([cstr("device_id",v.device_id),cnum("new_crc32",v.new_crc32),cnum("new_len",v.new_len),
+      cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","upgrade_start")])},
+  sensor_data_ack:{dir:"host→device (TCP:50010)",fields:[
+      {id:"device_id",g:"device_id"},{id:"sensor_id",num:true,def:1},{id:"seq",num:true,def:1},
+      {id:"status",num:true,def:1},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("device_id",v.device_id),cnum("sensor_id",v.sensor_id),cnum("seq",v.seq),
+      cnum("status",v.status),cnum("ts",v.ts),cstr("type","sensor_data_ack")]),
+    outSrc:v=>obj([cstr("device_id",v.device_id),cnum("sensor_id",v.sensor_id),cnum("seq",v.seq),
+      cnum("status",v.status),cnum("ts",v.ts),cstr("type","sensor_data_ack")])},
+  mode_set_req:{dir:"host→device (TCP:50010)",fields:[
+      {id:"device_id",g:"device_id"},{id:"mode",num:true,def:1,help:"1=ACTIVE,0=REG"},
+      {id:"persistent",num:true,def:1},{id:"sensor_id",num:true,def:0,help:"0=全部"},
+      {id:"seq",num:true,def:1},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("device_id",v.device_id),cnum("mode",v.mode),cnum("persistent",v.persistent),
+      cnum("sensor_id",v.sensor_id),cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","mode_set_req")]),
+    outSrc:v=>obj([cstr("device_id",v.device_id),cnum("mode",v.mode),cnum("persistent",v.persistent),
+      cnum("sensor_id",v.sensor_id),cnum("seq",v.seq),cnum("ts",v.ts),cstr("type","mode_set_req")])},
+  config_set_udp:{dir:"网关→设备 (UDP广播)",fields:[
+      {id:"ip",str:true,def:"192.168.0.120"},{id:"netmask",str:true,def:"255.255.255.0"},
+      {id:"gateway",str:true,def:"192.168.0.1"},{id:"host_ip",str:true,def:"192.168.0.10"},
+      {id:"host_mac",str:true,def:"00:80:E1:43:00:28"},{id:"target_mac",str:true,def:"00:80:E1:43:00:28"},
+      {id:"target_sn",g:"sn"},{id:"seq",num:true,def:1},{id:"ts",num:true,def:1788192008}],
+    signSrc:v=>obj([cstr("gateway",v.gateway),cstr("host_ip",v.host_ip),cstr("host_mac",v.host_mac),
+      cstr("ip",v.ip),cstr("netmask",v.netmask),cnum("seq",v.seq),cstr("target_mac",v.target_mac),
+      cstr("target_sn",v.target_sn),cnum("ts",v.ts),cstr("type","config_set")]),
+    outSrc:v=>obj([cstr("gateway",v.gateway),cstr("host_ip",v.host_ip),cstr("host_mac",v.host_mac),
+      cstr("ip",v.ip),cstr("netmask",v.netmask),cnum("seq",v.seq),cstr("target_mac",v.target_mac),
+      cstr("target_sn",v.target_sn),cnum("ts",v.ts),cstr("type","config_set")])}
+};
+
+/* ============ UI ============ */
+let currentType="register";
+const g=id=>document.getElementById(id).value;
+const setG=(id,v)=>{document.getElementById(id).value=v;};
+
+function renderTypePick(){
+  const box=document.getElementById("typepick"); box.innerHTML="";
+  for(const k in TYPES){
+    const t=TYPES[k];
+    const lab=document.createElement("label");
+    lab.innerHTML='<input type="radio" name="tp" value="'+k+'"'+(k===currentType?" checked":"")+'>'+
+      '<span>'+k+'</span><span class="badge '+(t.dir.startsWith("device")?"b-up":"b-dn")+'">'+
+      (t.dir.startsWith("device")?"上行":"下行")+'</span>';
+    lab.querySelector("input").addEventListener("change",()=>{currentType=k;renderFields();});
+    box.appendChild(lab);
+  }
+}
+function resolveDef(fld){
+  if(fld.g) return g("g_"+fld.g);
+  if(fld.def!==undefined) return fld.def;
+  return "";
+}
+function renderFields(){
+  const t=TYPES[currentType];
+  const box=document.getElementById("fields"); box.innerHTML="";
+  const badge=document.getElementById("dirBadge");
+  badge.innerHTML='<span class="badge '+(t.dir.startsWith("device")?"b-up":"b-dn")+'">'+t.dir+'</span>';
+  for(const fld of t.fields){
+    const row=document.createElement("div"); row.className="row";
+    const lbl=document.createElement("label");
+    const def=resolveDef(fld);
+    lbl.innerHTML=(fld.label||fld.id)+(fld.help?' <span class="help">('+fld.help+')</span>':'')+(fld.optional?' <span class="help">[可选]</span>':'');
+    let input;
+    if(fld.select){
+      input='<select id="f_'+fld.id+'">'+fld.select.map(o=>'<option'+(o===def?" selected":"")+'>'+o+'</option>').join('')+'</select>';
+    }else{
+      input='<input id="f_'+fld.id+'" type="'+(fld.num?'number':'text')+'" value="'+String(def).replace(/"/g,'&quot;')+'" />';
+    }
+    row.appendChild(lbl);
+    const wrap=document.createElement("div"); wrap.innerHTML=input; row.appendChild(wrap.firstChild);
+    box.appendChild(row);
+  }
+}
+function collect(){
+  const t=TYPES[currentType]; const v={};
+  for(const fld of t.fields){
+    let raw=document.getElementById("f_"+fld.id).value;
+    if(fld.num) raw=raw.trim();
+    v[fld.id]=raw;
+  }
+  return v;
+}
+function generate(){
+  const t=TYPES[currentType];
+  const v=collect();
+  const key=g("g_hmac");
+  const canonical=t.signSrc(v);            // 固件 sign 源串（ts 混合格式，与设备严格一致）
+  const sign=computeSign(canonical,key);
+  const out=t.outSrc(v).slice(0,-1)+',"sign":"'+sign+'"}';  // 下发 JSON（ts 全数字）
+  document.getElementById("canon").textContent=canonical;
+  document.getElementById("out").value=out;
+  document.getElementById("meta").textContent="sign = HMAC-SHA256(前4字节大写hex) = "+sign+"  |  报文长度 "+out.length+" 字节";
+  const st=document.getElementById("status"); st.className="status ok"; st.textContent="✓ 已生成";
+}
+function copyText(t){
+  const done=()=>{const s=document.getElementById("status");s.className="status ok";s.textContent="✓ 已复制到剪贴板";};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);}
+  else fallback();
+  function fallback(){const ta=document.createElement("textarea");ta.value=t;document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");done();}catch(e){const s=document.getElementById("status");s.className="status err";s.textContent="复制失败，请手动复制";}document.body.removeChild(ta);}
+}
+document.getElementById("genBtn").addEventListener("click",generate);
+document.getElementById("copyBtn").addEventListener("click",()=>copyText(document.getElementById("out").value));
+renderTypePick(); renderFields();
+</script>
+</body>
+</html>

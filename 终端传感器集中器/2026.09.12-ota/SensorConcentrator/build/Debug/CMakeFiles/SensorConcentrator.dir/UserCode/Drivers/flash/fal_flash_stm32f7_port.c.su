@@ -1,0 +1,11 @@
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:79:21:ram_flash_wait	4	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:84:21:ram_flash_clear_flags	4	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:90:21:ram_flash_unlock	4	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:98:21:ram_flash_lock	4	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:104:20:ram_flash_program_word	16	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:138:20:ram_flash_program_dword	40	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:148:20:ram_flash_erase_sector	16	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:196:12:init	16	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:247:12:read	32	static
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:258:20:write	208	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Drivers/flash/fal_flash_stm32f7_port.c:313:20:erase	64	static,ignoring_inline_asm

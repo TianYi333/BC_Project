@@ -1,0 +1,3 @@
+D:/Desktop/SensorConcentrator_boot/build/CMakeFiles/SensorConcentrator_boot.dir
+D:/Desktop/SensorConcentrator_boot/build/CMakeFiles/edit_cache.dir
+D:/Desktop/SensorConcentrator_boot/build/CMakeFiles/rebuild_cache.dir

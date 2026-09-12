@@ -1,0 +1,4 @@
+修复首次上电进入菜单需要按两次的BUG
+1，UserCode/Drivers/Encoder/Encoder.c：lastA/lastB/lastP 由回调内 static 局部变量提升为文件级 static；新增 g_encoder_synced 标记与 Encoder_SyncInitialLevel()（读取三引脚当前实际电平并置位）；回调开头加首次同步兜底（g_encoder_synced==0 时同步并 return 丢弃该中断）。
+2，UserCode/Drivers/Encoder/Encoder.h：声明 void Encoder_SyncInitialLevel(void);。
+3，UserCode/Logic/oled_task.c：第 76 行 home_page_callback() 前新增 Encoder_SyncInitialLevel();。

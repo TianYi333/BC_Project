@@ -1,0 +1,11 @@
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:75:6:fal_show_part_table	56	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:115:12:check_and_update_part_cache	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:162:5:fal_partition_init	8	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:333:29:fal_partition_find	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:350:36:flash_device_find_by_part	16	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:365:29:fal_get_partition_table	16	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:382:6:fal_set_partition_table_temp	16	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:404:5:fal_partition_read	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:445:5:fal_partition_write	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:485:5:fal_partition_erase	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/Fal/fal_partition.c:522:5:fal_partition_erase_all	16	static

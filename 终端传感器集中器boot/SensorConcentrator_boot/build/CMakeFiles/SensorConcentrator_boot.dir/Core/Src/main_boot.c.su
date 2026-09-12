@@ -1,0 +1,15 @@
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:63:21:bf_wait	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:68:21:bf_clear_flags	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:73:21:bf_unlock	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:81:21:bf_lock	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:87:20:bf_prog_word	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:108:20:bf_prog_dword	40	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:118:20:bf_erase_sector	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:138:13:boot_kick_iwdg	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:145:17:calc_crc	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:151:12:write_meta	120	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:187:12:burn_app	128	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:239:13:do_update	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:274:12:app_valid	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:285:13:JumpToApp	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\main_boot.c:293:5:main	56	static

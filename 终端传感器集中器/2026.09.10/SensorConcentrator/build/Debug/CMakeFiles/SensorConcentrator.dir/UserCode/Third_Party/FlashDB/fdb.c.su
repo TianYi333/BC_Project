@@ -1,0 +1,4 @@
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb.c:31:11:_fdb_init_ex	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb.c:102:6:_fdb_init_finish	16	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb.c:118:6:_fdb_deinit	16	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb.c:141:13:_fdb_db_path	16	static

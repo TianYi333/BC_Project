@@ -1,0 +1,6 @@
+UserCode/Drivers/ETH/net_comm_task.c：减少粗暴 tcp_abort
+safe_tcp_close() 改为先 tcp_close()，失败再 fallback 到 tcp_abort()，尽量减少 pending 在 ETH DMA 中的 pbuf 被 pcb purge 二次释放的风险。
+tcp_connected_cb() 错误分支删除了 tcp_abort(tpcb)——lwIP 回调里 pcb 所有权已归 lwIP，用户不应再 abort，只清全局引用即可，由 errf (tcp_error_callback) 释放。
+
+修复：配网修改服务器 IP → 旧连接异步关闭后立即重连（原来要等 5 秒）
+修复：TCP 握手失败 → 5 秒节流生效（原来回调里写的时间对任务不可见）

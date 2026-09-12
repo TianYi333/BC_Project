@@ -1,0 +1,8 @@
+D:/Desktop/SensorConcentrator/cmake/stm32cubemx/../../Drivers/CMSIS/Include/core_cm7.h:2147:34:__NVIC_SystemReset	4	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:25:6:lock	16	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:34:6:unlock	16	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:47:8:init_sys_db	24	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:71:6:deinit_sysdb	8	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:79:8:flashdb_format_and_reset	8	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:86:6:SoftReset	16	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/UserCode/Logic/syncif.c:91:6:print_sysdb	8	static

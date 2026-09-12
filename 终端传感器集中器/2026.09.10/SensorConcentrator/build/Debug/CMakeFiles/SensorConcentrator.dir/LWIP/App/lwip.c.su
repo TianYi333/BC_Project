@@ -1,0 +1,3 @@
+D:/Desktop/SensorConcentrator/LWIP/App/lwip.c:53:6:PHY_Reset	8	static
+D:/Desktop/SensorConcentrator/LWIP/App/lwip.c:64:6:MX_LWIP_Init	64	static
+D:/Desktop/SensorConcentrator/LWIP/App/lwip.c:128:13:ethernet_link_status_updated	16	static
