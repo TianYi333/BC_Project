@@ -1,0 +1,10 @@
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:49:6:MX_UART4_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:79:6:MX_UART5_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:109:6:MX_UART7_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:139:6:MX_UART8_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:170:6:MX_USART1_UART_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:201:6:MX_USART2_UART_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:232:6:MX_USART3_UART_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:263:6:MX_USART6_UART_Init	8	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:293:6:HAL_UART_MspInit	248	static
+D:/Desktop/SensorConcentrator/Core/Src/usart.c:835:6:HAL_UART_MspDeInit	16	static

@@ -1,0 +1,2 @@
+D:/Desktop/SensorConcentrator/UserCode/Logic/msg_queue.c:25:6:MsgQueue_Init	8	static
+D:/Desktop/SensorConcentrator/UserCode/Logic/msg_queue.c:41:6:Mutex_Init	8	static

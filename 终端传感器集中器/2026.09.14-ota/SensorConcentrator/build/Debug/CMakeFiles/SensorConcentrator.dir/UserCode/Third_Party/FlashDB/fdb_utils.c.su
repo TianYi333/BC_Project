@@ -1,0 +1,12 @@
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:77:10:fdb_calc_crc32	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:91:8:_fdb_set_status	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:126:8:_fdb_get_status	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:147:11:_fdb_write_status	40	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:173:8:_fdb_read_status	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:185:10:_fdb_continue_ff_addr	72	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:221:12:fdb_blob_make	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:237:8:fdb_blob_read	24	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:257:11:_fdb_flash_read	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:278:11:_fdb_flash_erase	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:299:11:_fdb_flash_write	32	static
+D:/Desktop/SensorConcentrator/UserCode/Third_Party/FlashDB/fdb_utils.c:322:11:_fdb_flash_write_align	56	static

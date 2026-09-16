@@ -1,0 +1,6 @@
+[1/2] Building C object CMakeFiles/SensorConcentrator.dir/Core/Src/main.c.obj
+[2/2] Linking C executable SensorConcentrator.elf; Building HEX file: SensorConcentrator.hex; Building BIN file: SensorConcentrator.bin
+C:/Users/Lenovo/AppData/Local/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin/../lib/gcc/arm-none-eabi/14.3.1/../../../../arm-none-eabi/bin/ld.exe: warning: SensorConcentrator.elf has a LOAD segment with RWX permissions
+Memory region         Used Size  Region Size  %age Used
+             RAM:      236592 B       512 KB     45.13%
+           FLASH:      205740 B       512 KB     39.24%

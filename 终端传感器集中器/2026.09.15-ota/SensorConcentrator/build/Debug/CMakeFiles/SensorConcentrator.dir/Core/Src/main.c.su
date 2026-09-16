@@ -1,0 +1,7 @@
+D:/Desktop/SensorConcentrator/cmake/stm32cubemx/../../Drivers/CMSIS/Include/core_cm7.h:2229:22:SCB_EnableICache	4	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/cmake/stm32cubemx/../../Drivers/CMSIS/Include/core_cm7.h:2281:22:SCB_EnableDCache	24	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/Core/Src/main.c:73:5:main	8	static
+D:/Desktop/SensorConcentrator/Core/Src/main.c:149:6:SystemClock_Config	88	static
+D:/Desktop/SensorConcentrator/Core/Src/main.c:212:6:MPU_Config	24	static
+D:/Desktop/SensorConcentrator/Core/Src/main.c:247:6:HAL_TIM_PeriodElapsedCallback	16	static
+D:/Desktop/SensorConcentrator/Core/Src/main.c:265:6:Error_Handler	4	static,ignoring_inline_asm

@@ -1,0 +1,9 @@
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:93:6:vApplicationStackOverflowHook	24	static,ignoring_inline_asm
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:108:13:vApplicationMallocFailedHook	4	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:127:6:vApplicationGetIdleTaskMemory	24	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:140:6:vApplicationGetTimerTaskMemory	24	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:154:6:MX_FREERTOS_Init	72	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:200:6:StartDefaultTask	56	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:228:6:IWDGTask	16	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:242:6:Task_InitTask	192	static
+D:/Desktop/SensorConcentrator/Core/Src/freertos.c:283:6:PrintTaskStackAndCount	24	static

@@ -1,0 +1,3 @@
+D:/Desktop/SensorConcentrator/Core/Src/sysmem.c:54:7:_sbrk	32	static
+D:/Desktop/SensorConcentrator/Core/Src/sysmem.c:117:6:__malloc_lock	16	static
+D:/Desktop/SensorConcentrator/Core/Src/sysmem.c:145:6:__malloc_unlock	16	static
