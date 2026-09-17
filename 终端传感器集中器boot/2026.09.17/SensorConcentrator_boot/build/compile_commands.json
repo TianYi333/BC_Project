@@ -1,0 +1,32 @@
+[
+{
+  "directory": "D:/Desktop/SensorConcentrator_boot/build",
+  "command": "D:\\APP\\GCC-ARM\\bin\\arm-none-eabi-gcc.exe -DSTM32F767xx -ID:\\Desktop\\SensorConcentrator_boot\\Core\\Inc -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Device\\ST\\STM32F7xx\\Include -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Include  -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -x assembler-with-cpp -MMD -MP -g -o CMakeFiles\\SensorConcentrator_boot.dir\\startup_stm32f767xx.s.obj -c D:\\Desktop\\SensorConcentrator_boot\\startup_stm32f767xx.s",
+  "file": "D:/Desktop/SensorConcentrator_boot/startup_stm32f767xx.s",
+  "output": "CMakeFiles/SensorConcentrator_boot.dir/startup_stm32f767xx.s.obj"
+},
+{
+  "directory": "D:/Desktop/SensorConcentrator_boot/build",
+  "command": "D:\\APP\\GCC-ARM\\bin\\arm-none-eabi-gcc.exe -DSTM32F767xx -ID:\\Desktop\\SensorConcentrator_boot\\Core\\Inc -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Device\\ST\\STM32F7xx\\Include -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Include  -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -O0 -g3 -std=gnu11 -o CMakeFiles\\SensorConcentrator_boot.dir\\Core\\Src\\main_boot.c.obj -c D:\\Desktop\\SensorConcentrator_boot\\Core\\Src\\main_boot.c",
+  "file": "D:/Desktop/SensorConcentrator_boot/Core/Src/main_boot.c",
+  "output": "CMakeFiles/SensorConcentrator_boot.dir/Core/Src/main_boot.c.obj"
+},
+{
+  "directory": "D:/Desktop/SensorConcentrator_boot/build",
+  "command": "D:\\APP\\GCC-ARM\\bin\\arm-none-eabi-gcc.exe -DSTM32F767xx -ID:\\Desktop\\SensorConcentrator_boot\\Core\\Inc -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Device\\ST\\STM32F7xx\\Include -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Include  -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -O0 -g3 -std=gnu11 -o CMakeFiles\\SensorConcentrator_boot.dir\\Core\\Src\\boot_crc.c.obj -c D:\\Desktop\\SensorConcentrator_boot\\Core\\Src\\boot_crc.c",
+  "file": "D:/Desktop/SensorConcentrator_boot/Core/Src/boot_crc.c",
+  "output": "CMakeFiles/SensorConcentrator_boot.dir/Core/Src/boot_crc.c.obj"
+},
+{
+  "directory": "D:/Desktop/SensorConcentrator_boot/build",
+  "command": "D:\\APP\\GCC-ARM\\bin\\arm-none-eabi-gcc.exe -DSTM32F767xx -ID:\\Desktop\\SensorConcentrator_boot\\Core\\Inc -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Device\\ST\\STM32F7xx\\Include -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Include  -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -O0 -g3 -std=gnu11 -o CMakeFiles\\SensorConcentrator_boot.dir\\Core\\Src\\boot_uart.c.obj -c D:\\Desktop\\SensorConcentrator_boot\\Core\\Src\\boot_uart.c",
+  "file": "D:/Desktop/SensorConcentrator_boot/Core/Src/boot_uart.c",
+  "output": "CMakeFiles/SensorConcentrator_boot.dir/Core/Src/boot_uart.c.obj"
+},
+{
+  "directory": "D:/Desktop/SensorConcentrator_boot/build",
+  "command": "D:\\APP\\GCC-ARM\\bin\\arm-none-eabi-gcc.exe -DSTM32F767xx -ID:\\Desktop\\SensorConcentrator_boot\\Core\\Inc -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Device\\ST\\STM32F7xx\\Include -ID:\\Desktop\\SensorConcentrator_boot\\Drivers\\CMSIS\\Include  -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -fstack-usage -O0 -g3 -std=gnu11 -o CMakeFiles\\SensorConcentrator_boot.dir\\Core\\Src\\system_stm32f7xx.c.obj -c D:\\Desktop\\SensorConcentrator_boot\\Core\\Src\\system_stm32f7xx.c",
+  "file": "D:/Desktop/SensorConcentrator_boot/Core/Src/system_stm32f7xx.c",
+  "output": "CMakeFiles/SensorConcentrator_boot.dir/Core/Src/system_stm32f7xx.c.obj"
+}
+]

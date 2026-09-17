@@ -1,0 +1,9 @@
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:31:13:de_high	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:32:13:de_low	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:34:13:uart_putc_raw	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:41:13:uart_wait_tc	4	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:46:6:boot_uart_init	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:85:13:emit_str	16	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:90:13:emit_uint	56	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:107:6:boot_printf	40	static
+D:\Desktop\SensorConcentrator_boot\Core\Src\boot_uart.c:183:6:boot_dump_flash_sr	16	static
