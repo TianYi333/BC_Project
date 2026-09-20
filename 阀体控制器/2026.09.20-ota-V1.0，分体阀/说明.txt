@@ -1,0 +1,3 @@
+point/dir 残留错配，close/open 的索引钳制兜底报错复位
+增加recv_item.inj_id 的校验
+增加注油失败/故障时，关闭定量阀

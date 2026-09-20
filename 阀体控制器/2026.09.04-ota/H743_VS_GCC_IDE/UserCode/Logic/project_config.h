@@ -69,7 +69,7 @@ const char *my_basename(const char *path);
 //#define DEVICE_SN               "OIL-2026-0003"
 //#define DEVICE_ID               "OIL-2026-0003"
 #define DEVICE_MODEL            "LUB-CTRL-V1.0"
-#define DEVICE_FW_VER           "1.0.3"
+#define DEVICE_FW_VER           "1.0.6"
 #define DOMAIN_NAME             "FACTORY_OIL"
 
 #define INJECTOR_CNT            8

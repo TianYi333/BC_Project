@@ -835,8 +835,8 @@ static void udp_msg_process(const char *buf, const ip_addr_t *src_ip, u16_t src_
             cJSON_AddStringToObject(resp, "type", "discover_response");
             cJSON_AddStringToObject(resp, "mac", mac_str);
             cJSON_AddStringToObject(resp, "sn", g_device_sn);
-            cJSON_AddStringToObject(resp, "model", "LUB-CTRL-V1.0");
-            cJSON_AddStringToObject(resp, "firmware_ver", "1.0.3");
+            cJSON_AddStringToObject(resp, "model", DEVICE_MODEL);
+            cJSON_AddStringToObject(resp, "firmware_ver", DEVICE_FW_VER);
             cJSON_AddStringToObject(resp, "cur_ip", ip4addr_ntoa(netif_ip4_addr(&gnetif)));
 
             uint64_t real_ts = Get_Unix_Second();
