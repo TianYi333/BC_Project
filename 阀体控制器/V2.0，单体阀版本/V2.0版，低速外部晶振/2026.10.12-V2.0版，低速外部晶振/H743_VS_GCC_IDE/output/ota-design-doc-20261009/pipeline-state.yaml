@@ -1,0 +1,56 @@
+schema_version: 1
+request_id: ota-design-doc-20261009
+created_at: "2026-10-09T15:54:00+08:00"
+updated_at: "2026-10-09T15:54:00+08:00"
+
+entry_type: full_pipeline
+stage_chain: [1, 2, 3]
+
+output_docx_path: "D:\\Desktop\\H743_VS_GCC_IDE\\output\\ota-design-doc-20261009\\stage3\\控制节点固件升级系统设计说明.docx"
+output_docx_user_specified: false
+
+current_stage: 3
+
+stages:
+  stage_0:
+    status: completed
+    completed_at: "2026-10-09T15:54:00+08:00"
+    decision: full_pipeline
+  stage_1:
+    status: completed
+    started_at: "2026-10-09T15:54:30+08:00"
+    completed_at: "2026-10-09T16:03:00+08:00"
+    output_path: "stage1/final_draft.md"
+    genre: general
+    expert_used: general-writer
+    route_tag: general_writing
+    critic_decision: null
+  stage_2:
+    status: completed
+    started_at: "2026-10-09T16:03:00+08:00"
+    completed_at: "2026-10-09T16:04:00+08:00"
+    route: general_writing
+    html_sub: markdown2html
+    output_path: "stage2/intermediate/ota_design.html"
+    output_format: html
+    skills_invoked: ["html-to-docx"]
+    design_tokens_path: null
+    fallback: false
+    fallback_reason: null
+  stage_3:
+    status: completed
+    started_at: "2026-10-09T16:04:00+08:00"
+    completed_at: "2026-10-09T16:04:30+08:00"
+    executor: html_to_docx
+    input_format: html
+    output_path: "stage3/控制节点固件升级系统设计说明.docx"
+    skill_used: ["html-to-docx"]
+    present_files_opened: false
+    fallback: false
+    fallback_reason: null
+
+consistency_check:
+  output_files_exist: true
+  stage_chain_complete: true
+  last_checked_at: "2026-10-09T16:04:30+08:00"
+  errors: []

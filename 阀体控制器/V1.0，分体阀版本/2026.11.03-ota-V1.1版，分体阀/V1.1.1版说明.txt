@@ -1,0 +1,4 @@
+cubemx修改DO_INPUT_1 改成 GPIO_PULLDOWN
+（该版本文件：UserCode/Logic/running_logic.c，start_running() 内
+
+if (waiting_met_sen(motor_loc_list[0].pipe) > 0)）存在问题

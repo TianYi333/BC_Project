@@ -1,0 +1,71 @@
+修改
+static err_t low_level_output(struct netif *netif, struct pbuf *p)
+{
+  uint32_t i = 0U;
+  struct pbuf *q = NULL;
+  err_t errval = ERR_OK;
+  ETH_BufferTypeDef Txbuffer[ETH_TX_DESC_CNT] = {0};
+  uint8_t pbuf_ref_flag = 0; // 标记是否成功增加引用，用于统一释放
+
+  memset(Txbuffer, 0 , ETH_TX_DESC_CNT*sizeof(ETH_BufferTypeDef));
+
+  for(q = p; q != NULL; q = q->next)
+  {
+    if(i >= ETH_TX_DESC_CNT)
+      return ERR_IF;
+
+    Txbuffer[i].buffer = q->payload;
+    Txbuffer[i].len = q->len;
+
+    if(i>0)
+    {
+      Txbuffer[i-1].next = &Txbuffer[i];
+    }
+
+    if(q->next == NULL)
+    {
+      Txbuffer[i].next = NULL;
+    }
+
+    i++;
+  }
+
+  TxConfig.Length = p->tot_len;
+  TxConfig.TxBuffer = Txbuffer;
+  TxConfig.pData = p;
+
+  pbuf_ref(p);
+  pbuf_ref_flag = 1; // 标记已ref，需要释放抵消
+
+  do
+  {
+    errval = ERR_OK;
+    if(HAL_ETH_Transmit_IT(&heth, &TxConfig) == HAL_OK)
+    {
+      // 发送成功：回调HAL_ETH_TxFreeCallback内部会pbuf_free(p)，此处不处理
+      errval = ERR_OK;
+    }
+    else
+    {
+      if(HAL_ETH_GetError(&heth) & HAL_ETH_ERROR_BUSY)
+      {
+        osSemaphoreAcquire(TxPktSemaphore, ETHIF_TX_TIMEOUT);
+        HAL_ETH_ReleaseTxPacket(&heth);
+        errval = ERR_BUF;
+      }
+      else
+      {
+        // 真正发送失败，仅释放一次pbuf，退出循环
+        if(pbuf_ref_flag)
+        {
+          pbuf_free(p);
+          pbuf_ref_flag = 0;
+        }
+        errval = ERR_IF;
+        break; // 致命错误，跳出循环，不再重试
+      }
+    }
+  }while(errval == ERR_BUF);
+
+  return errval;
+}

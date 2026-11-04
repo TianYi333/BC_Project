@@ -1,0 +1,110 @@
+V2.1.2版说明（内部晶振 LUB-CTRL-V2.0i）
+
+版本号：2.1.1 -> 2.1.2
+日期：2026-11-04
+来源：从主工程 d:\Desktop\H743_VS_GCC_IDE 同步
+
+============================================================
+一、waiting_met_sen() 返回值扩展为 5 档
+============================================================
+原语义只有 1(成功)/0(失败)，无法区分失败原因。
+现改为：
+  1 = 成功（传感器确认到位）
+  2 = sen_id 非法（>2，说明上游 point.pipe 被污染）
+  3 = 2s 队列等待超时（传感器离线）
+  4 = 系统总超时（SYS_INJECT_TIMEOUT = 20s）
+  5 = 未知（sen_id==0 时落到末尾）
+
+同时修正了函数上方的防御注释：合法 sen_id 范围固定为 0/1/2；
+sen_id==0 不进入等待循环，会落到 return 5（调用方视为失败）。
+
+============================================================
+二、修复：上电传感器确认是空检查（bug）
+============================================================
+文件：UserCode/Logic/running_logic.c，start_running() 内
+
+  旧：if (waiting_met_sen(motor_loc_list[0].pipe) > 0)
+  新：if (waiting_met_sen(motor_loc_list[0].pipe) == 1)
+
+原因："> 0" 会把超时(3)、系统超时(4)、未知(5) 全当成成功，
+导致上电时"阀芯传感器到位确认"实际是空检查——传感器没到位也照样
+往下走（走到 motor_loc_list[1] 并切 SYS_MODE_READY），
+带着未确认的阀芯位置继续运行。
+改后超时走 else 分支：报 Q_MODEL_RESET_FAILURE + OLED "init sen error"，
+并保持 SYS_MODE_STARTING 等待重试。
+
+============================================================
+三、注油失败原因细分上报
+============================================================
+文件：UserCode/Logic/running_logic.c，inject_running() 内
+
+失败判定由 == 0 改为 met_sen_ret != 1，按返回码生成错误串并上报：
+  WATING_MET_SEN_FAILURE !(2:p=%u invalid)          sen_id非法
+  WATING_MET_SEN_FAILURE !(3:p=%u g=%u r=%u 2s)     2s等待超时
+  WATING_MET_SEN_FAILURE !(4:p=%u g=%u r=%u)         系统总超时
+  WATING_MET_SEN_FAILURE !(5:p=%u g=%u r=%u)         未知
+  WATING_MET_SEN_FAILURE !(ret=%u)                  兜底
+
+同时附带本次现场观测值，便于区分"电机没到位"与"传感器组合不对"：
+  p = 期望的传感器ID(point.pipe)
+  g = Read_MET_Sensor() 组合结果 (0=都不在/都触发, 1=SEN_1, 2=SEN_2)
+  r = 原始电平位 (bit0=SEN_1, bit1=SEN_2)
+
+串口输出：met sen err ret=%u pipe=%u got=%u raw=%u (s1=%u s2=%u)
+OLED 显示：sen p%u g%u r%u
+
+============================================================
+四、修复：电机归零失败不再"带病启动"（bug）
+============================================================
+原逻辑：上电 zdt_run_motor_zero() 失败只打一条日志就继续跑，
+带着未验证的零点基准执行绝对角度指令，阀芯会停在错误的物理位置。
+
+现改为 4 处配合：
+
+1) 新增状态标志（UserCode/Logic/running_logic.c 定义，
+   running_logic.h 声明 extern）：
+     g_q_zero_ready  1=Q已归零，角度基准可信
+     g_p_zero_ready  1=P已归零
+   放在普通 .bss（不使用 ._DTC_FSRAM），掉电/重启后自动清零，
+   必须重新归零才能运行，符合"基准不可信则停机"的安全语义。
+
+2) 上电归零改为有限重试（running_logic.h 新增 MOTOR_ZERO_MAX_RETRY = 3）：
+     最多重试 3 次，每次间隔 500ms；
+     成功则置对应标志=1；
+     仍失败则保留原有的 sys_warning + logInfo + OLED 告警。
+
+3) 阻断点放在绝对定位入口：
+     q_motor_run_point() / p_motor_run_point() 开头检查对应标志，
+     为 0 则直接 return 0 并告警，**不发出任何 0xFD 绝对角度指令**。
+     这两个函数是全部绝对定位指令的唯一出口，一处拦住所有下游动作
+     （start_running / inject_running / q_motor_run_open / q_motor_run_close）。
+
+4) 恢复路径（UserCode/Logic/oled_page.c）：
+     Q/P Model Init 菜单页手动置零（zdt_set_motor_reset_zero）成功后，
+     置对应标志=1，自动解除阻断，无需重启。
+
+============================================================
+涉及文件
+============================================================
+  UserCode/Logic/running_logic.c
+  UserCode/Logic/running_logic.h
+  UserCode/Logic/oled_page.c
+  UserCode/Logic/project_config.h   （版本号 2.1.1 -> 2.1.2）
+
+============================================================
+注意
+============================================================
+1. 本工程为低速【内部晶振】版本（LUB-CTRL-V2.0i，RTC LSI 32000Hz），
+   与低速【外部晶振】版本的差异（gpio.c / main.c / rtc.c / .ioc）
+   保持原样未改动。
+
+2. 归零标志为 0 时系统会拒绝一切绝对定位并提示 "Q zero not ready !"，
+   需进 Q Model Init 手动置零后才能恢复运行。
+   手动置零务必先把阀芯停在 SEN_2（pipe2）触发位再按 PUSH，
+   否则会引入 180° 错位（表现为期望 SEN_1 实测 SEN_2，即 p1 g2）。
+
+3. 未引入主工程 unit test 中的 print_q_sen_map / show_q_sen_map
+   临时诊断代码（[SENMAP] 串口诊断与 OLED 映射表常驻显示）。
+
+4. 改动未在本机编译验证（无 arm-none-eabi-gcc 全量构建环境），
+   请在 IDE 中重新构建确认。

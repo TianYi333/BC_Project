@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Desktop/Oil_Pump_Control/build/Debug/cmake_install.cmake",
+		"D:/Desktop/Oil_Pump_Control/build/Debug/cmake/stm32cubemx/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

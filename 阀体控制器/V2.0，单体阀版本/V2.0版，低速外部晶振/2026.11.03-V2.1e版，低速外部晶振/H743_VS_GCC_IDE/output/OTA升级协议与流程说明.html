@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OTA 升级协议与流程说明文档</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2933; --muted:#52606d; --line:#e4e7eb;
+    --brand:#0b6e4f; --brand2:#134e4a; --code-bg:#f5f7fa; --accent:#f0f6ff;
+    --tbl-head:#0b6e4f; --tbl-head-fg:#ffffff;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Source Han Sans SC",sans-serif;
+    line-height:1.75;font-size:15px;}
+  .wrap{max-width:960px;margin:0 auto;padding:48px 40px 80px;}
+  header.doc-head{border-bottom:3px solid var(--brand);padding-bottom:20px;margin-bottom:32px;}
+  header.doc-head h1{font-size:28px;margin:0 0 8px;color:var(--brand2);}
+  header.doc-head .meta{color:var(--muted);font-size:13px;}
+  h2{font-size:21px;margin:40px 0 14px;padding-left:12px;border-left:5px solid var(--brand);color:var(--brand2);}
+  h3{font-size:17px;margin:26px 0 10px;color:#0b4f3a;}
+  p{margin:10px 0;}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px;}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--tbl-head);color:var(--tbl-head-fg);font-weight:600;}
+  tbody tr:nth-child(even){background:#fafbfc;}
+  code{background:var(--code-bg);padding:2px 6px;border-radius:4px;font-family:"Consolas","SF Mono",monospace;font-size:13px;color:#b4303c;}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-left:4px solid var(--brand);
+    padding:14px 16px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.6;
+    font-family:"Consolas","SF Mono",monospace;color:#243b53;white-space:pre-wrap;word-break:break-all;}
+  blockquote{margin:14px 0;padding:10px 16px;background:var(--accent);border-left:4px solid #2b6cb0;color:#243b53;}
+  .note{background:#fff8e6;border:1px solid #f0d58c;border-left:4px solid #e0a800;padding:10px 14px;border-radius:6px;color:#5b4500;font-size:14px;}
+  ul,ol{padding-left:24px;}
+  li{margin:6px 0;}
+  .seq{font-family:"Consolas",monospace;color:#0b6e4f;font-weight:600;white-space:pre-wrap;font-size:13px;}
+  hr{border:none;border-top:1px solid var(--line);margin:36px 0;}
+  footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="doc-head">
+  <h1>OTA 升级协议与流程说明文档</h1>
+  <div class="meta">依据当前工程代码（<code>d:\Desktop\H743_VS_GCC_IDE</code>）逆向梳理 · 反映 2026-10-12 实际实现状态<br>
+  适用项目：H743_VS_GCC_IDE（控制节点固件，STM32H743ZGT6 + FreeRTOS + lwIP + FlashDB + 外部 W25Q64，设备型号 LUB-CTRL-V2.0）</div>
+</header>
+
+<h2>1. 总体架构</h2>
+<table>
+<tr><th>项</th><th>说明</th></tr>
+<tr><td>MCU</td><td>STM32H743ZGT6（Cortex-M7，双 Bank Flash）</td></tr>
+<tr><td>软件栈</td><td>FreeRTOS + lwIP（TCP/UDP）+ FlashDB（KV 库）</td></tr>
+<tr><td>外部存储</td><td>W25Q64（SPI NOR，8MB），分区：<code>firmware_a@0x30000</code>、<code>firmware_bak@0x130000</code>、<code>ota_meta@0x230000</code></td></tr>
+<tr><td>双 Bank 防砖</td><td>Bootloader @ <code>0x08000000</code> / App @ <code>0x08100000</code>；升级即把 <code>firmware_a</code> 烧录进 App 区</td></tr>
+<tr><td>OTA 状态机</td><td><code>NONE=0</code> / <code>PENDING=1</code> / <code>DONE=2</code> / <code>CONFIRMED=3</code> / <code>FAILED=4</code>，magic = <code>0x4C55424F</code></td></tr>
+<tr><td>固件校验</td><td>标准 CRC-32（<code>fdb_calc_crc32</code>，IEEE 802.3/PKZIP），与 <code>zlib.crc32</code> 等价</td></tr>
+</table>
+
+<h2>2. 网络通道与端口</h2>
+<table>
+<tr><th>通道</th><th>协议 / 端口</th><th>用途</th></tr>
+<tr><td>控制通道</td><td>TCP <code>50010</code></td><td>网关下发 <code>upgrade</code> 命令，设备回复 <code>upgrade_ack</code> / <code>upgrade_status</code> / <code>upgrade_result</code></td></tr>
+<tr><td>文件通道</td><td>TFTP（UDP <code>69</code>）</td><td>网关把固件 <code>.bin</code> 推送到设备 TFTP Server</td></tr>
+</table>
+<blockquote>设备 TFTP Server 监听端口固定为 UDP <code>69</code>（由 lwIP <code>tftp_opts.h</code> 的 <code>TFTP_PORT</code> 决定）；<code>upgrade</code> 命令不再携带 TFTP 端口 / Server / 超时字段。</blockquote>
+
+<h2>3. 安全机制（HMAC-SHA256 验签）</h2>
+<ul>
+<li>所有上行/下行 JSON 帧均带 <code>sign</code> 字段。</li>
+<li>签名算法：<code>HMAC-SHA256(key=HMAC_KEY, msg=签名源串)</code>，取摘要<strong>前 4 字节</strong>按<strong>大写 HEX</strong> 拼接为 8 字符 <code>sign</code>。</li>
+<li><code>HMAC_KEY</code>：定义于 <code>UserCode/Logic/project_config.h</code>（<code>#define HMAC_KEY "0123456789abcdef0123456789abcdef"</code>），网关脚本 <code>--hmac-key</code> 须与之一致。</li>
+<li>签名源串 = <strong>不含 <code>sign</code> 字段的 JSON</strong>（字段严格字典序），设备与网关各自构造并比对。</li>
+<li><code>ts</code> 字段为 Unix 时间的字符串（如 <code>"1728000000"</code>）。</li>
+</ul>
+
+<h2>4. 协议帧总览</h2>
+<table>
+<tr><th>帧</th><th>方向</th><th>type 值</th><th>是否带 sign</th><th>说明</th></tr>
+<tr><td><code>upgrade</code></td><td>网关 → 设备</td><td><code>upgrade</code></td><td>是</td><td>下发升级参数（文件名/大小/CRC）</td></tr>
+<tr><td><code>upgrade_ack</code></td><td>设备 → 网关</td><td><code>upgrade_ack</code></td><td>是</td><td>接受或拒绝升级（含错误码）</td></tr>
+<tr><td><code>upgrade_status</code></td><td>设备 → 网关</td><td><code>upgrade_status</code></td><td>是</td><td>过程状态（接收完成/校验失败/重启）</td></tr>
+<tr><td><code>upgrade_result</code></td><td>设备 → 网关</td><td><code>upgrade_result</code></td><td>是</td><td>升级结果（成功确认后上报）</td></tr>
+</table>
+
+<h2>5. 帧字段详述</h2>
+
+<h3>5.1 <code>upgrade</code>（网关 → 设备）</h3>
+<p>下发升级指令，触发设备进入接收态。</p>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>device_id</code></td><td>string</td><td>设备唯一 ID</td></tr>
+<tr><td><code>crc</code></td><td>string</td><td>固件 CRC-32 的 <strong>8 位大写 HEX</strong>（如 <code>"1A2B3C4D"</code>），设备端按 16 进制解析为 <code>uint32</code></td></tr>
+<tr><td><code>file_size</code></td><td>number</td><td>固件字节数（≤ 512KB）</td></tr>
+<tr><td><code>filename</code></td><td>string</td><td>期望接收文件名，长度 <strong>1..20</strong> 字符</td></tr>
+<tr><td><code>seq</code></td><td>number</td><td>命令序号</td></tr>
+<tr><td><code>ts</code></td><td>string</td><td>Unix 时间字符串</td></tr>
+<tr><td><code>type</code></td><td>string</td><td>固定 <code>"upgrade"</code></td></tr>
+<tr><td><code>sign</code></td><td>string</td><td>4 字节 HMAC 前缀，大写 HEX</td></tr>
+</table>
+<p><strong>HMAC 签名源串</strong>（设备端 <code>tcp_sign_buf_2048</code>，与网关 <code>build_sign_src</code> 一致）</p>
+<pre>{"crc":"%s","device_id":"%s","file_size":%lu,"filename":"%s","seq":%lu,"ts":%s,"type":"upgrade"}</pre>
+<p><strong>设备端处理</strong>（<code>net_comm_task.c</code> 解析 + <code>ota_handle_upgrade_start</code>）</p>
+<ol>
+<li>校验 <code>sign</code>（HMAC-SHA256 比对）。</li>
+<li>解析字段；<code>crc</code> 用 <code>strtoul(..., 16)</code> 解析为 <code>uint32</code>。</li>
+<li>调用 <code>ota_handle_upgrade_start(new_len, new_crc32, filename)</code>，按返回码回复 <code>upgrade_ack</code>（见 §6）。</li>
+</ol>
+
+<h3>5.2 <code>upgrade_ack</code>（设备 → 网关）</h3>
+<p>设备对 <code>upgrade</code> 命令的响应。</p>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>device_id</code></td><td>string</td><td>设备 ID</td></tr>
+<tr><td><code>estimated_duration</code></td><td>number</td><td>预计耗时（秒）；接受时填 <code>60</code>，拒绝时填 <code>0</code></td></tr>
+<tr><td><code>message</code></td><td>string</td><td><code>"upgrade_accepted"</code> / <code>"upgrade_rejected"</code></td></tr>
+<tr><td><code>seq</code></td><td>number</td><td>序号</td></tr>
+<tr><td><code>status</code></td><td>number</td><td><strong>错误码</strong>（见 §6）</td></tr>
+<tr><td><code>ts</code></td><td>number</td><td>Unix 时间</td></tr>
+<tr><td><code>type</code></td><td>string</td><td>固定 <code>"upgrade_ack"</code></td></tr>
+<tr><td><code>sign</code></td><td>string</td><td>HMAC 前缀</td></tr>
+</table>
+<pre>{"device_id":"%s","estimated_duration":%u,"message":"%s","seq":%lu,"status":%d,"ts":%lu,"type":"upgrade_ack"}</pre>
+<blockquote>网关脚本以 <code>ACK_KEYWORD = b'upgrade_ack'</code> 等待该帧。</blockquote>
+
+<h3>5.3 <code>upgrade_status</code>（设备 → 网关）</h3>
+<p>升级过程中的过程状态上报（TCP 已连接时直发，未连接则丢弃）。</p>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>device_id</code></td><td>string</td><td>设备 ID</td></tr>
+<tr><td><code>message</code></td><td>string</td><td>描述信息</td></tr>
+<tr><td><code>seq</code></td><td>number</td><td>序号</td></tr>
+<tr><td><code>status</code></td><td>string</td><td>取值见下表</td></tr>
+<tr><td><code>ts</code></td><td>number</td><td>Unix 时间</td></tr>
+<tr><td><code>type</code></td><td>string</td><td>固定 <code>"upgrade_status"</code></td></tr>
+<tr><td><code>sign</code></td><td>string</td><td>HMAC 前缀</td></tr>
+</table>
+<table>
+<tr><th><code>status</code> 值</th><th>触发时机</th></tr>
+<tr><td><code>recv_done</code></td><td>TFTP 文件接收完成，进入 CRC 校验阶段</td></tr>
+<tr><td><code>verify_fail</code></td><td>CRC-32 / 长度校验失败（升级失败终止，不重启）</td></tr>
+<tr><td><code>reboot</code></td><td>校验通过，即将软复位以应用新固件</td></tr>
+</table>
+<pre>{"device_id":"%s","message":"%s","seq":%lu,"status":"%s","ts":%lu,"type":"upgrade_status"}</pre>
+
+<h3>5.4 <code>upgrade_result</code>（设备 → 网关）</h3>
+<p>升级成功确认后的最终结果上报。</p>
+<div class="note">本帧<strong>已移除</strong> <code>error_code</code>、<code>error_msg</code>、<code>reboot_required</code> 三个字段（2026-10-12 调整），仅保留下列字段。</div>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>device_id</code></td><td>string</td><td>设备 ID</td></tr>
+<tr><td><code>message</code></td><td>string</td><td>如 <code>"upgrade_success"</code></td></tr>
+<tr><td><code>model</code></td><td>string</td><td><code>DEVICE_MODEL</code>（当前 <code>"LUB-CTRL-V2.0"</code>）</td></tr>
+<tr><td><code>new_version</code></td><td>string</td><td>新固件版本号（见 §7 版本号约定）</td></tr>
+<tr><td><code>old_version</code></td><td>string</td><td>升级前版本号（见 §7 版本号约定）</td></tr>
+<tr><td><code>result</code></td><td>number</td><td><code>1</code> = 成功</td></tr>
+<tr><td><code>seq</code></td><td>number</td><td>序号</td></tr>
+<tr><td><code>ts</code></td><td>number</td><td>Unix 时间</td></tr>
+<tr><td><code>type</code></td><td>string</td><td>固定 <code>"upgrade_result"</code></td></tr>
+<tr><td><code>sign</code></td><td>string</td><td>HMAC 前缀</td></tr>
+</table>
+<pre>{"device_id":"%s","message":"%s","model":"%s","new_version":"%s","old_version":"%s","result":%d,"seq":%lu,"ts":%lu,"type":"upgrade_result"}</pre>
+<blockquote>若上报时 TCP 尚未连上，结果缓存到 <code>reboot_kvdb</code>（key <code>ota_result</code>），待 TCP 连接成功后由 <code>upgrade_result_check_and_report()</code> 补发（见 §8）。</blockquote>
+
+<h2>6. <code>upgrade_ack.status</code> 错误码映射</h2>
+<p><code>status = (ota_ret == 0) ? 0 : (uint8_t)(-ota_ret)</code></p>
+<table>
+<tr><th>status</th><th>含义</th><th>对应返回值</th></tr>
+<tr><td><code>0</code></td><td>接受，已开始监听 TFTP</td><td>成功（0）</td></tr>
+<tr><td><code>1</code></td><td>设备忙碌（正在升级中，拒绝新请求）</td><td><code>-1</code></td></tr>
+<tr><td><code>2</code></td><td>固件长度非法（<code>0</code> 或超过 512KB）</td><td><code>-2</code></td></tr>
+<tr><td><code>3</code></td><td>CRC 校验值非法（CRC = 0）</td><td><code>-3</code></td></tr>
+<tr><td><code>4</code></td><td>分区缺失（<code>firmware_a</code> / <code>ota_meta</code> 未找到）</td><td><code>-4</code></td></tr>
+<tr><td><code>5</code></td><td>TFTP 服务初始化失败</td><td><code>-5</code></td></tr>
+<tr><td><code>6</code></td><td>文件名非法（空或超过 20 字符）</td><td><code>-6</code></td></tr>
+</table>
+<p>校验顺序（在 <code>ota_handle_upgrade_start</code> 内依次执行）：<code>-1</code> → <code>-2</code> → <code>-3</code> → <code>-6</code> → <code>-4</code> → <code>-5</code>。</p>
+
+<h2>7. 版本号约定</h2>
+<ul>
+<li><strong><code>old_version</code>（升级前版本）</strong>：收到 <code>upgrade</code> 命令、校验通过时，把当前运行固件的 <code>DEVICE_FW_VER</code> 冻结并存入 FlashDB（<code>reboot_kvdb</code>，key <code>ota_oldver</code>）；重启烧录新固件后仍能读回，作为 <code>upgrade_result.old_version</code>。</li>
+<li><strong><code>new_version</code>（新固件版本）</strong>：上报时<strong>直接读取</strong>当前运行固件的 <code>DEVICE_FW_VER</code> 宏（不落盘）。因上报发生在新固件启动后，此时读到的是新固件的版本号。</li>
+<li><strong>约束</strong>：每次出新固件，必须手动将 <code>project_config.h</code> 的 <code>DEVICE_FW_VER</code> 改为新版本号后重新编译；协议本身不校验"新>旧"。</li>
+</ul>
+
+<h2>8. 防砖与掉电恢复机制</h2>
+<h3>8.1 OTA 状态机（<code>ota_meta</code>）</h3>
+<table>
+<tr><th>状态</th><th>写入方</th><th>含义</th></tr>
+<tr><td><code>NONE</code></td><td>初始</td><td>无升级</td></tr>
+<tr><td><code>PENDING</code></td><td>OTA 驱动（收满校验通过、复位前）</td><td>已收固件待烧录</td></tr>
+<tr><td><code>DONE</code></td><td>Bootloader（烧录完成时）</td><td>新固件已写入 App 区</td></tr>
+<tr><td><code>CONFIRMED</code></td><td>App 启动确认（<code>ota_app_confirm</code>）</td><td>新固件启动成功，防砖确认点</td></tr>
+<tr><td><code>FAILED</code></td><td>异常</td><td>升级失败</td></tr>
+</table>
+<blockquote>防砖逻辑：App 启动约 5 秒后 <code>ota_app_confirm()</code> 检查 <code>ota_meta.state == DONE</code> 才置 <code>CONFIRMED</code>；若未确认（启动失败），状态停留在 <code>PENDING</code>/<code>FAILED</code>，下次上电 Boot 可回退，避免变砖。</blockquote>
+
+<h3>8.2 <code>reboot_kvdb</code> 持久化内容</h3>
+<p>独立 KV 库（库名 <code>rebootdb</code>，分区 <code>ef_kvdb3</code>），专用于跨重启传递数据：</p>
+<table>
+<tr><th>key</th><th>类型</th><th>内容</th><th>生命周期</th></tr>
+<tr><td><code>reboot_info</code></td><td>blob</td><td>主动重启原因（<code>RebootPersistentInfo_t</code>，magic <code>0x52454254</code>）</td><td>上电上报后删除（一次性）</td></tr>
+<tr><td><code>ota_oldver</code></td><td>string</td><td>升级前版本号</td><td>升级结果上报后由新固件逻辑不再依赖，可保留</td></tr>
+<tr><td><code>ota_result</code></td><td>blob</td><td>升级结果缓存（<code>ota_result_blob_t</code>，magic <code>0x4F544152</code>）</td><td>TCP 连上补发后删除</td></tr>
+</table>
+
+<h3>8.3 <code>upgrade_result</code> 缓存补发</h3>
+<p><code>tcp_report_upgrade_result()</code> 在 <code>ota_app_confirm()</code> 中调用：若当时 <code>g_tcp_connected != 1</code>，先把结果 blob 存入 <code>ota_result</code>；TCP 连接成功分支调用 <code>upgrade_result_check_and_report()</code> 读出并发送、随后删除。保证重启后即便 TCP 延迟连上，结果不丢失。</p>
+
+<h2>9. 完整升级时序流程</h2>
+<pre class="seq">网关                                  设备(TCP 50010 / TFTP UDP 69)
+ │                                      │
+ │── 1. upgrade 命令(HMAC sign) ───────>│  校验 sign / 解析字段 / 合法性校验
+ │                                      │  └─ ota_handle_upgrade_start()
+ │<── 2. upgrade_ack(status) ───────────│  接受(status=0) 或 拒绝(status=1..7)
+ │                                      │
+ │   (拒绝则流程结束)                    │
+ │                                      │  擦 firmware_a → 启动 TFTP Server(69)
+ │                                      │
+ │── 3. TFTP PUT .bin (filename 匹配) ─>│  增量接收 + CRC-32 累计
+ │                                      │
+ │                           收满 ──────┼─> 比对 CRC/长度
+ │                                      │     ├─ 不符: upgrade_status(verify_fail) → 终止(不重启)
+ │                                      │     └─ 相符:
+ │<── 4. upgrade_status(recv_done) ─────│
+ │<── 5. upgrade_status(reboot) ────────│  写 ota_meta=PENDING → 软复位
+ │                                      │
+ │                      Boot 烧录 ──────┼─> firmware_a → App 区(0x08100000)
+ │                                      │     ota_meta: PENDING → DONE
+ │                      新 App 启动 ────┼─> ~5s 后 ota_app_confirm()
+ │                                      │     DONE → CONFIRMED
+ │<── 6. upgrade_result(result=1) ──────│  (TCP 未连则缓存，连上补发)
+ │                                      │</pre>
+<p><strong>关键步骤说明</strong></p>
+<ol>
+<li>网关下发 <code>upgrade</code>（带 HMAC <code>sign</code>）；设备校验签名与字段合法性。</li>
+<li>设备回复 <code>upgrade_ack</code>，<code>status</code> 编码接受/拒绝原因（§6）。</li>
+<li>接受后设备擦 <code>firmware_a</code> 并启动 TFTP Server，仅接受 <code>filename</code> 匹配的文件。</li>
+<li>网关用 TFTP 推送 <code>.bin</code>。</li>
+<li>收满后做 CRC-32 比对：不匹配上报 <code>verify_fail</code> 并终止；匹配上报 <code>recv_done</code> → 写 <code>ota_meta=PENDING</code> → 上报 <code>reboot</code> → 软复位。</li>
+<li>Bootloader 将 <code>firmware_a</code> 烧录进 App 区，状态推进为 <code>DONE</code>，跳转 App。</li>
+<li>新 App 启动约 5 秒后 <code>ota_app_confirm()</code>：状态 <code>DONE → CONFIRMED</code>（防砖确认），上报 <code>upgrade_result</code>。</li>
+</ol>
+
+<h2>10. 网关工具 <code>ota_tftp_push.py</code> 使用</h2>
+<p>路径：<code>d:\Desktop\OTA_Upgrade_Tool\ota_tftp_push.py</code></p>
+<pre>python ota_tftp_push.py &lt;firmware.bin&gt; --device-id &lt;DEVICE_ID&gt; ^
+       [--port 50010] [--seq N] ^
+       [--tftp-host &lt;设备IP&gt;] ^
+       [--hmac-key &lt;HMAC_KEY&gt;] [--tftp-filename &lt;NAME&gt;]</pre>
+<table>
+<tr><th>参数</th><th>默认值</th><th>说明</th></tr>
+<tr><td><code>bin</code>（位置参数）</td><td>—</td><td>待升级 <code>.bin</code> 文件路径</td></tr>
+<tr><td><code>--device-id</code></td><td>必填</td><td>设备 DEVICE_ID</td></tr>
+<tr><td><code>--port</code></td><td><code>50010</code></td><td>TCP 控制通道监听端口</td></tr>
+<tr><td><code>--tftp-filename</code></td><td><code>H743_VS_GCC_IDE.bin</code></td><td>同时作为命令 <code>filename</code> 与 TFTP put 文件名，须 ≤ 20 字符</td></tr>
+<tr><td><code>--hmac-key</code></td><td><code>HMAC_KEY</code></td><td>HMAC 密钥，须与 <code>project_config.h</code> 一致</td></tr>
+</table>
+<p><strong>行为</strong></p>
+<ul>
+<li>计算 <code>crc = zlib.crc32(data) &amp; 0xFFFFFFFF</code>，格式化为 8 位大写 HEX（<code>"%08X"</code>）。</li>
+<li>发送 <code>upgrade</code> 命令（type=<code>upgrade</code>，带 HMAC <code>sign</code>），等待 <code>upgrade_ack</code>（<code>ACK_KEYWORD = b'upgrade_ack'</code>）。</li>
+<li>收到确认后，用 TFTP 把 <code>.bin</code> 推送到 <code>tftp_host</code>（UDP 69），文件名 = <code>--tftp-filename</code>。</li>
+</ul>
+
+<h2>11. 关键代码位置索引</h2>
+<table>
+<tr><th>内容</th><th>位置</th></tr>
+<tr><td>协议常量 <code>OTA_FILENAME_MAX_LEN=20</code> / <code>OTA_TFTP_PORT=69</code></td><td><code>UserCode/Drivers/ota/ota_common.h</code></td></tr>
+<tr><td><code>ota_handle_upgrade_start</code> 原型</td><td><code>UserCode/Drivers/ota/ota.h</code></td></tr>
+<tr><td>校验逻辑（返回码 -1~-6）</td><td><code>UserCode/Drivers/ota/ota.c</code></td></tr>
+<tr><td>TFTP 接收回调 / 期望文件名比对</td><td><code>UserCode/Drivers/ota/ota.c</code>（<code>tftp_open_cb</code> / <code>tftp_write_cb</code>）</td></tr>
+<tr><td><code>recv_done</code> / <code>verify_fail</code> / <code>reboot</code> 上报</td><td><code>UserCode/Drivers/ota/ota.c</code>（<code>ota_on_complete</code>）</td></tr>
+<tr><td><code>upgrade_result</code> 上报（成功确认）</td><td><code>UserCode/Drivers/ota/ota.c</code>（<code>ota_app_confirm</code>）</td></tr>
+<tr><td><code>upgrade</code> 命令解析 + HMAC 校验</td><td><code>UserCode/Drivers/ETH/net_comm_task.c</code></td></tr>
+<tr><td><code>upgrade_ack</code> 发送</td><td><code>UserCode/Drivers/ETH/net_comm_task.c</code>（<code>tcp_send_upgrade_ack</code>）</td></tr>
+<tr><td><code>upgrade_status</code> / <code>upgrade_result</code> 发送</td><td><code>UserCode/Drivers/ETH/net_comm_task.c</code>（<code>tcp_report_upgrade_status</code> / <code>send_upgrade_result_now</code>）</td></tr>
+<tr><td><code>reboot_kvdb</code> 初始化与 KV key</td><td><code>UserCode/Drivers/ETH/net_comm_task.c</code>（<code>init_reboot_db</code> / <code>KV_KEY_OTA_OLDVER</code> / <code>KV_KEY_OTA_RESULT</code>）</td></tr>
+<tr><td>HMAC 密钥 / 设备型号 / 版本宏</td><td><code>UserCode/Logic/project_config.h</code></td></tr>
+<tr><td>网关推送脚本</td><td><code>d:\Desktop\OTA_Upgrade_Tool\ota_tftp_push.py</code></td></tr>
+</table>
+
+<h2>12. 注意事项与已知约束</h2>
+<ol>
+<li><strong>版本号无自动校验</strong>：<code>new_version</code> 纯靠编译期 <code>DEVICE_FW_VER</code>；若新固件沿用旧版本号，网关会看到 <code>old_version == new_version</code>。</li>
+<li><strong>文件名 ≤ 20 字符</strong>：受 lwIP <code>TFTP_MAX_FILENAME_LEN</code> 限制；<code>upgrade</code> 的 <code>filename</code> 必须与之匹配。</li>
+<li><strong><code>crc</code> 为 HEX 字符串</strong>：设备端按 16 进制解析；值为 <code>0</code> 视为非法（错误码 3）。</li>
+<li><strong>本环境未做 ARM 编译验证</strong>：文档基于源码静态梳理，工程须在 STM32CubeIDE 重新编译确认。</li>
+<li><strong><code>.docx</code> 自动转换不可用</strong>：本文档以 Markdown + HTML 交付（本机 Word 转换引擎依赖缺失/无外网）；如需 <code>.docx</code>，可手动用 Word 打开后另存，或在本机配置 Python 依赖后重跑转换。</li>
+</ol>
+
+<footer>本文档由源码静态梳理生成 · 反映 2026-10-12 实现 · 配套文件：OTA升级协议与流程说明.md（同源 Markdown）</footer>
+</div>
+</body>
+</html>

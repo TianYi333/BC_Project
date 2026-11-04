@@ -1,0 +1,34 @@
+CMakeFiles/H743_VS_GCC_IDE.dir/UserCode/Third_Party/cJSON/cJSON.c.obj: \
+ D:\Desktop\H743_VS_GCC_IDE\UserCode\Third_Party\cJSON\cJSON.c \
+ D:/APP/GCC-ARM/arm-none-eabi/include/string.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/_ansi.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/newlib.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/_newlib_version.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/config.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/machine/ieeefp.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/features.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/reent.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/_ansi.h \
+ D:/APP/GCC-ARM/lib/gcc/arm-none-eabi/15.2.1/include/stddef.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/cdefs.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/machine/_default_types.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/_types.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/machine/_types.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/lock.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/_locale.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/strings.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/string.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/stdio.h \
+ D:/APP/GCC-ARM/lib/gcc/arm-none-eabi/15.2.1/include/stdarg.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/stdio.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/math.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/stdlib.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/machine/stdlib.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/alloca.h \
+ D:/APP/GCC-ARM/lib/gcc/arm-none-eabi/15.2.1/include/float.h \
+ D:/APP/GCC-ARM/lib/gcc/arm-none-eabi/15.2.1/include/limits.h \
+ D:/APP/GCC-ARM/lib/gcc/arm-none-eabi/15.2.1/include/syslimits.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/limits.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/sys/syslimits.h \
+ D:/APP/GCC-ARM/arm-none-eabi/include/ctype.h \
+ D:\Desktop\H743_VS_GCC_IDE\UserCode\Third_Party\cJSON\cJSON.h

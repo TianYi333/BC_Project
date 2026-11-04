@@ -1,0 +1,1 @@
+D:\APP\GCC-ARM\bin\arm-none-eabi-gcc.exe -g -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -T D:/Desktop/H743_VS_GCC_IDE/STM32H743XG_FLASH.ld --specs=nosys.specs -Wl,-Map=H743_VS_GCC_IDE.map -Wl,--gc-sections @CMakeFiles\H743_VS_GCC_IDE.dir\objects1.rsp -o H743_VS_GCC_IDE

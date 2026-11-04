@@ -1,0 +1,1 @@
+在 tcp_recv_cb 的关闭分支不要在这里同步把 tcp_pcb 置 NULL,只置 tcp_pending_close=1(并把 g_tcp_connected=0 停掉心跳),让主循环的 safe_tcp_close() 能按全局指针找到并真正 tcp_close() 掉它:

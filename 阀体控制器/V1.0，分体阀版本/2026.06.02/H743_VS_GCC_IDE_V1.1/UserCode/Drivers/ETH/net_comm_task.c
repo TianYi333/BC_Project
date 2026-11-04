@@ -1,0 +1,1484 @@
+#include "net_comm_task.h"
+
+//==== 全局静态缓冲区，替代函数内局部大数组 ====
+static char sign_buf_req[512];   // 专门给 request 验签用
+static char sign_buf_resp[512];  // 专门给 response 组包用
+static char sign_buf_online[512];  // 专门给 online 组包用
+static char sign_buf_register[512];  // 专门给 register 组包用
+// static char tcp_sign_buf_1024[1024];
+static char tcp_sign_buf_2048[2048];
+
+static char tcp_rx_buf[RX_BUF_SIZE];
+static struct tcp_pcb *tcp_pcb = NULL;
+static uint32_t g_seq = 1;  // 全局自增序列号，上电从 1 开始
+static uint32_t g_last_cfg_seq = 0;           // 上位机 -> 设备：UDP报文 seq
+static uint32_t g_last_cmd_seq = 0;           // 上位机 -> 设备：指令报文 seq 
+
+static uint8_t  g_network_configured = 0;         // 配网成功标志：0=未配网 1=已配网
+
+uint8_t g_is_reboot = 1;// 设备上电状态标记：true=重启/非首次上电  false=首次上电(无历史配网)
+
+static uint32_t reconnect_tick = 0;// TCP重连节流计时，避免频繁重连
+static uint8_t  g_tcp_connected = 0;  // 0=未真正连接 1=握手成功
+
+
+static ip4_addr_t  g_server_ip;                // 上位机业务服务器IP（动态保存）
+// 网络配置结构体（固化到Flash）
+static NetConfig_t g_net_cfg;
+// 网络独立数据库句柄
+struct fdb_kvdb net_kvdb;
+
+TaskInfo_t g_task_request_buf[TASK_DATA_MAX];// 任务请求数据缓冲区，最多支持8条任务
+uint16_t g_task_request_cnt = 0;// 记录当前有效元素个数
+TaskOrderInfo_t g_task_order_buf[TASK_DATA_MAX];
+uint16_t g_task_order_cnt = 0;// 记录当前有效元素个数
+ExecuteResultInfo_t g_task_execute_result_buf[TASK_DATA_MAX];// 任务执行结果缓冲区，最多支持8条任务
+uint16_t g_task_execute_result_cnt = 0;// 记录当前有效元素个数
+
+char g_task_id[48] = {0};//全局任务ID
+
+HMAC_SHA256_CTX hmac;
+static TimerHandle_t xHeartbeatTimer = NULL;
+static uint8_t bSendHeartbeatFlag = 0;
+
+static void udp_recv_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
+static void udp_send_device_online(struct udp_pcb *upcb, uint16_t reason);
+static void udp_msg_process(const char *buf, const ip_addr_t *src_ip, u16_t src_port, struct udp_pcb *upcb);
+static void tcp_error_callback(void *arg, err_t err);
+static err_t tcp_connected_cb(void *arg, struct tcp_pcb *tpcb, err_t err);
+static err_t tcp_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
+static void tcp_parse_cmd(struct tcp_pcb *tpcb, char *buf);
+static void tcp_send_str(struct tcp_pcb *tpcb, const char *str);
+static void tcp_send_heartbeat(HeartBeatParam_t *p_param);
+static void tcp_send_register(void);
+void tcp_send_task_request(TaskInfo_t *info_arr, uint16_t arr_len);
+void tcp_send_execute_result(ExecuteResultInfo_t *info_arr, uint16_t arr_len);
+static void vHeartbeatTimerCallback(TimerHandle_t xTimer);
+
+
+static void vHeartbeatTimerCallback(TimerHandle_t xTimer)
+{
+    bSendHeartbeatFlag = 1;
+}
+
+int _write(int file, char *ptr, int len)
+{
+    if (uart_mutex == NULL) return len; // 锁未初始化时直接发送
+
+    osMutexAcquire(uart_mutex, osWaitForever);
+    uint16_t idx = 0;
+    const uint16_t chunk_size = 128; // 每次最多发128字节，远小于UART FIFO压力
+    while (idx < len)
+    {
+        uint16_t send_len = (len - idx) > chunk_size ? chunk_size : (len - idx);
+        HAL_UART_Transmit(&huart2, (uint8_t *)(ptr + idx), send_len, HAL_MAX_DELAY);
+        idx += send_len;
+    }
+    osMutexRelease(uart_mutex);
+    return len;
+}
+
+// 打印本地IP地址（调试用）
+void print_local_ip(void)
+{
+    char ip_buf[16];
+    ipaddr_ntoa_r(&gnetif.ip_addr, ip_buf, sizeof(ip_buf));
+    LOG("Local IP: %s", ip_buf);
+}
+
+// 网络数据库初始化（独立、安全、带线程锁）
+int8_t init_net_db(void)
+{
+    fdb_err_t result;
+    struct fdb_default_kv default_kv = {0};
+
+    fdb_kvdb_control(&net_kvdb, FDB_KVDB_CTRL_SET_LOCK, (void *)lock);
+    fdb_kvdb_control(&net_kvdb, FDB_KVDB_CTRL_SET_UNLOCK, (void *)unlock);
+
+    result = fdb_kvdb_init(&net_kvdb, "netdb", "ef_kvdb1", &default_kv, NULL);
+
+    if(result != FDB_NO_ERR) {
+        return -1;
+    }
+    LOG("ETH database initialization successful");
+    return 0;
+}
+
+
+// 上电读取Flash保存的网络配置，自动配置网卡IP
+void net_config_init(void)
+{
+    struct fdb_blob blob_obj;
+    fdb_blob_t blob = &blob_obj;
+
+    memset(&g_net_cfg, 0, sizeof(NetConfig_t));
+
+    blob->buf = (uint8_t *)&g_net_cfg;
+    blob->size = sizeof(NetConfig_t);
+
+    size_t len = fdb_kv_get_blob(&net_kvdb, "net_cfg", blob);
+
+    if(len == sizeof(NetConfig_t) && g_net_cfg.configured == 1)
+    {
+        ip4_addr_t ip, mask, gw, srv_ip;
+        IP4_ADDR(&ip,       g_net_cfg.ip[0],        g_net_cfg.ip[1],        
+                            g_net_cfg.ip[2],        g_net_cfg.ip[3]);
+        IP4_ADDR(&mask,     g_net_cfg.netmask[0],   g_net_cfg.netmask[1],   
+                            g_net_cfg.netmask[2],   g_net_cfg.netmask[3]);
+        IP4_ADDR(&gw,       g_net_cfg.gateway[0],   g_net_cfg.gateway[1],   
+                            g_net_cfg.gateway[2],   g_net_cfg.gateway[3]);
+        IP4_ADDR(&srv_ip,   g_net_cfg.server_ip[0], g_net_cfg.server_ip[1], 
+                            g_net_cfg.server_ip[2], g_net_cfg.server_ip[3]);
+
+        netif_set_ipaddr(&gnetif, &ip);
+        netif_set_netmask(&gnetif, &mask);
+        netif_set_gw(&gnetif, &gw);
+
+        autoip_stop(&gnetif);  // 关闭自动IP协商
+        netif_set_down(&gnetif);
+        netif_set_up(&gnetif);
+
+        gnetif.flags |= NETIF_FLAG_BROADCAST;//网口启用后，强制开启广播权限
+
+        g_server_ip = srv_ip;
+        g_network_configured = 1;
+        LOG("Flash loading network configuration succeeded, TCP started");
+    }
+    else
+    {
+        autoip_start(&gnetif);   // 强制启动本地链路IP
+        g_network_configured = 0;
+        LOG("Not connected to the network, starting UDP broadcast");
+    }
+}
+
+
+// 保存配网参数 to FlashDB
+static void net_config_save(void)
+{
+    g_net_cfg.configured = 1;
+
+    struct fdb_blob blob_obj;
+    fdb_blob_t blob = &blob_obj;
+    blob->buf = (uint8_t *)&g_net_cfg;
+    blob->size = sizeof(NetConfig_t);
+
+    fdb_kv_set_blob(&net_kvdb, "net_cfg", blob);
+
+    LOG("The distribution network parameters have been saved to Flash");
+}
+
+/**
+ * @brief  UDP设备发现任务，端口50000（始终运行）
+ * @note   监听上位机UDP广播发现报文，回复设备信息
+ *         仅开启广播接收，AutoIP模式无法使用组播
+ */
+void udp_discover_task(void *arg)
+{
+    struct udp_pcb *upcb = NULL;
+    ip4_addr_t local_ip;
+
+    while(1)
+    {
+        local_ip = *netif_ip4_addr(&gnetif);
+        if(!ip4_addr_isany(&local_ip))
+        {
+            break;
+        }
+        LOG("Waiting for auto link ip...");
+        osDelay(1000);
+    }
+    print_local_ip();
+    LOG("Valid IP obtained, start UDP service");
+
+    upcb = udp_new();
+    if(upcb != NULL)
+    {
+        udp_bind(upcb, IP_ADDR_ANY, UDP_LISTEN_PORT);
+        upcb->so_options |= SOF_BROADCAST;
+        gnetif.flags |= NETIF_FLAG_BROADCAST;// 开启网口广播权限
+        udp_recv(upcb, udp_recv_callback, NULL);
+
+        LOG("UDP PCB created successfully");
+        LOG("UDP Binding successful port: %d", upcb->local_port);
+        LOG("SOF_BROADCAST enabled: %s",
+            (upcb->so_options & SOF_BROADCAST) ? "YES" : "NO");
+        LOG("netif flags: 0x%08X", gnetif.flags);
+        osDelay(3000); // 短暂延时保证网络稳定
+        udp_send_device_online(upcb,0);//上电
+    }
+    else
+    {
+        LOG("udp_new() failed, no pcb available!");
+    }
+
+    UdpMsgTypeDef udp_msg;
+    
+    while(1)
+    {
+        //osDelay(2000);
+        // const char *pure_json_buf_2 = "{\"domain\":\"FACTORY_OIL\",\"gateway_mac\":\"1a:f5:79:d4:5e:32\",\"seq\":1,\"ts\":1776996714,\"type\":\"discover_request\"}";
+        
+        // LOG("Sorted JSON: %s\r\n", pure_json_buf_2);
+        // LOG("Sorted JSON Length: %lu\r\n", (unsigned long)strlen(pure_json_buf_2));
+        // uint8_t gw_calc_hash[32] = {0};
+
+        // hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+        // hmac_sha256_update(&hmac, (const uint8_t *)pure_json_buf_2, strlen(pure_json_buf_2));
+        // hmac_sha256_final(&hmac, gw_calc_hash);
+
+        // char gw_calc_sign[9] = {0};
+        // snprintf(gw_calc_sign, sizeof(gw_calc_sign), "%02X%02X%02X%02X",
+        //         gw_calc_hash[0], gw_calc_hash[1],
+        //         gw_calc_hash[2], gw_calc_hash[3]);
+        // LOG("Calc sign: %s\r\n", gw_calc_sign);
+        if(xQueueReceive(udp_msg_queue, &udp_msg, pdMS_TO_TICKS(100)) == pdPASS)
+        {
+            char *buf = udp_msg.data;
+            udp_msg_process(buf, &udp_msg.src_ip, udp_msg.src_port, upcb);
+        }
+        //循环读取 PHY 链路状态
+        // int32_t link = LAN8742_GetLinkState(&LAN8742);
+        // uint32_t flags = gnetif.flags;
+        // LOG("LinkState:%d, NetIfFlags:0x%08X\r\n", link, flags);
+        // osDelay(10000);
+    }
+}
+
+void uint64_to_str(uint64_t num, char* str) {
+    int i = 0;
+    if (num == 0) {
+        str[i++] = '0';
+    } else {
+        char temp[21]; 
+        int j = 0;
+        while (num > 0) {
+            temp[j++] = (num % 10) + '0';
+            num /= 10;
+        }
+        // 倒序复制
+        while (j > 0) {
+            str[i++] = temp[--j];
+        }
+    }
+    str[i] = '\0'; 
+}
+
+// 通过 UDP 发送 device_online 上线报文（广播发送）
+static void udp_send_device_online(struct udp_pcb *upcb, uint16_t reason)
+{
+    if(upcb == NULL) return;
+    gnetif.flags |= NETIF_FLAG_BROADCAST;// 确保广播权限
+
+    cJSON *root = cJSON_CreateObject();
+    uint64_t ts = Time_To_Unix();
+    char mac_str[32] = {0};
+    uint8_t *mac = gnetif.hwaddr;
+
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    memset(sign_buf_online, 0, sizeof(sign_buf_online));
+    char ts_online_str[21] = {0};
+    uint64_to_str(ts, ts_online_str);
+    
+    const char *boot_str;
+    int boot_json;
+    if(g_network_configured)
+    {
+        boot_str  = "true";
+        boot_json  = cJSON_True;
+    }
+    else
+    {
+        boot_str  = "false";
+        boot_json  = cJSON_False;
+    }
+
+    // 签名原文（保持原有字典序不变）
+    snprintf(sign_buf_online, sizeof(sign_buf_online)-1,
+            "{\"cur_ip\":\"%s\",\"firmware_ver\":\"%s\",\"is_reboot\":%s,\"mac\":\"%s\",\"model\":\"%s\",\"reason\":%d,\"seq\":%lu,\"sn\":\"%s\",\"ts\":%s,\"type\":\"%s\"}",
+            ip4addr_ntoa(netif_ip4_addr(&gnetif)),
+            DEVICE_FW_VER,
+            boot_str,
+            mac_str,
+            DEVICE_MODEL,
+            reason,
+            (unsigned long)g_seq,
+            DEVICE_SN,
+            ts_online_str,
+            "device_online");
+    LOG("UDP Sorted device_online JSON:\r\n%s\r\n", sign_buf_online);
+    uint8_t hash[32] = {0};
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)sign_buf_online, strlen(sign_buf_online));
+    hmac_sha256_final(&hmac, hash);
+
+    char sign_str[9] = {0};
+    snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X",
+             hash[0], hash[1], hash[2], hash[3]);
+
+    // 组装完整报文
+    cJSON_AddStringToObject(root, "type", "device_online");
+    cJSON_AddStringToObject(root, "mac", mac_str);
+    cJSON_AddStringToObject(root, "sn", DEVICE_SN);
+    cJSON_AddStringToObject(root, "model", DEVICE_MODEL);
+    cJSON_AddStringToObject(root, "firmware_ver", DEVICE_FW_VER);
+    cJSON_AddStringToObject(root, "cur_ip", ip4addr_ntoa(netif_ip4_addr(&gnetif)));
+    cJSON_AddBoolToObject(root, "is_reboot", boot_json);//true=重启，false=首次上电
+    cJSON_AddNumberToObject(root, "reason", reason);//0-上电，1-看门狗，2-软件重启（目前统一暂为0）
+    cJSON_AddNumberToObject(root, "ts", ts);
+    cJSON_AddNumberToObject(root, "seq", g_seq);
+    cJSON_AddStringToObject(root, "sign", sign_str);
+
+    char *str = cJSON_PrintUnformatted(root);
+    if(str)
+    {
+        LOG("UDP Send JSON:\r\n%s\r\n", str);
+        uint16_t send_len = strlen(str);
+        struct pbuf *p_tx = pbuf_alloc(PBUF_TRANSPORT, send_len, PBUF_POOL);
+        if(p_tx != NULL)
+        {
+
+            memcpy(p_tx->payload, str, send_len);
+            // UDP 广播发送（对应上位机发现端口 UDP_LISTEN_PORT）
+            err_t ret = udp_sendto(upcb, p_tx, IP_ADDR_BROADCAST, UDP_LISTEN_PORT);
+            LOG("UDP device_online send status:%d\r\n", ret);
+            pbuf_free(p_tx);
+        }
+        free(str);
+        g_seq++;
+    }
+    cJSON_Delete(root);
+}
+
+
+// UDP报文统一处理分发
+static void udp_msg_process(const char *buf, const ip_addr_t *src_ip, u16_t src_port, struct udp_pcb *upcb)
+{
+    LOG("UDP Recv JSON:\r\n%s\r\n", buf);
+    cJSON *root = cJSON_Parse(buf);
+    if(root == NULL) return;
+
+    cJSON *type = cJSON_GetObjectItem(root, "type");
+    if(!type)
+    {
+        cJSON_Delete(root);
+        return;
+    }
+
+    // 设备发现请求
+    if(strcmp(type->valuestring, "discover_request") == 0)
+    {
+        cJSON *domain          = cJSON_GetObjectItem(root, "domain");
+        cJSON *gateway_mac     = cJSON_GetObjectItem(root, "gateway_mac");
+        cJSON *ts              = cJSON_GetObjectItem(root, "ts");
+        cJSON *seq             = cJSON_GetObjectItem(root, "seq");
+        cJSON *sign            = cJSON_GetObjectItem(root, "sign");
+
+        if(!domain || domain->type != cJSON_String)            goto udp_task_err;
+        if(!gateway_mac || gateway_mac->type != cJSON_String)  goto udp_task_err;
+        if(!ts || ts->type != cJSON_Number)                    goto udp_task_err;
+        if(!seq || seq->type != cJSON_Number)                  goto udp_task_err;
+        if(!sign || sign->type != cJSON_String)                goto udp_task_err;
+
+        if(strcmp(domain->valuestring, "FACTORY_OIL") != 0)    goto udp_task_err;
+
+        // 时间戳校验：与当前时间差 <60秒
+        uint64_t now_ts = Time_To_Unix();
+        int64_t  time_diff = llabs((int64_t)now_ts - (int64_t)ts->valuedouble);
+        if (time_diff > TIME_VALID_SEC)  
+        {
+            LOG("Time verification failed!\r\n");
+            // goto udp_task_err;
+        }
+        uint32_t curr_gw_seq = (uint32_t)seq->valuedouble;
+         if(curr_gw_seq <= g_last_cfg_seq )
+         {
+            LOG("Sequence number verification failed!\r\n");
+            // goto udp_task_err;   
+         } 
+        g_last_cfg_seq = curr_gw_seq;
+
+
+        memset(sign_buf_req, 0, sizeof(sign_buf_req));
+        char ts_str[21] = {0};
+        uint64_t ts_num = (uint64_t)ts->valuedouble;
+        uint64_to_str(ts_num, ts_str);
+
+        // 按键名字典序构造无sign原始JSON
+        snprintf(sign_buf_req, sizeof(sign_buf_req)-1,
+            "{\"domain\":\"%s\",\"gateway_mac\":\"%s\",\"seq\":%lu,\"ts\":%s,\"type\":\"%s\"}",
+            domain->valuestring,
+            gateway_mac->valuestring,
+            (unsigned long)curr_gw_seq,
+            ts_str,
+            "discover_request");
+
+        LOG("UDP Sorted discover_request JSON:\r\n%s\r\n", sign_buf_req);
+
+        uint8_t gw_calc_hash[32] = {0};
+        hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+        hmac_sha256_update(&hmac, (const uint8_t *)sign_buf_req, strlen(sign_buf_req));
+        hmac_sha256_final(&hmac, gw_calc_hash);
+
+        char gw_calc_sign[9] = {0};
+        snprintf(gw_calc_sign, sizeof(gw_calc_sign), "%02X%02X%02X%02X",
+                gw_calc_hash[0], gw_calc_hash[1],
+                gw_calc_hash[2], gw_calc_hash[3]);
+        LOG("Calc discover_request sign: %s\r\n", gw_calc_sign);      
+        //签名不匹配 → 非法报文
+        if (strcmp(sign->valuestring, gw_calc_sign) != 0) {
+             LOG("Invalid sign, discard the packet\r\n");
+             goto udp_task_err;
+        }
+
+        {
+            cJSON *resp = cJSON_CreateObject();
+            uint8_t *mac_addr = gnetif.hwaddr;
+            char mac_str[32];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                    mac_addr[0], mac_addr[1], mac_addr[2],
+                    mac_addr[3], mac_addr[4], mac_addr[5]);
+            cJSON_AddStringToObject(resp, "mac", mac_str);
+            cJSON_AddStringToObject(resp, "sn", "OIL-2026-0001");
+            cJSON_AddStringToObject(resp, "model", "LUB-CTRL-V1.0");
+            cJSON_AddStringToObject(resp, "firmware_ver", "1.0.3");
+            cJSON_AddStringToObject(resp, "cur_ip", ip4addr_ntoa(netif_ip4_addr(&gnetif)));
+
+            // uint64_t real_ts = Time_To_Unix();
+            // cJSON_AddNumberToObject(resp, "ts", real_ts);
+            cJSON_AddNumberToObject(resp, "ts", ts_num+20);//调试阶段使用发送来的时间戳
+            cJSON_AddNumberToObject(resp, "seq", g_seq);
+            cJSON_AddStringToObject(resp, "type", "discover_response");
+
+            memset(sign_buf_resp, 0, sizeof(sign_buf_resp));
+            char ts_buf[21] = {0};
+            // uint64_to_str(real_ts, ts_buf);
+            uint64_to_str(ts_num+20, ts_buf);//调试阶段使用发送来的时间戳
+
+            snprintf(sign_buf_resp, sizeof(sign_buf_resp)-1,
+                "{\"cur_ip\":\"%s\",\"firmware_ver\":\"%s\",\"mac\":\"%s\",\"model\":\"%s\",\"seq\":%u,\"sn\":\"%s\",\"ts\":%s,\"type\":\"%s\"}",
+                ip4addr_ntoa(netif_ip4_addr(&gnetif)),
+                DEVICE_FW_VER,
+                mac_str,
+                DEVICE_MODEL,
+                (unsigned int)g_seq,
+                DEVICE_SN,
+                ts_buf,
+                "discover_response"
+            );
+            LOG("UDP Sorted discover_response JSON:\r\n%s\r\n", sign_buf_resp);
+
+            uint8_t sha256_result[32] = {0};
+            hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+            hmac_sha256_update(&hmac, (const uint8_t *)sign_buf_resp, strlen(sign_buf_resp));
+            hmac_sha256_final(&hmac, sha256_result);
+
+            char sign_str[9] = {0};
+            snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X",
+                    sha256_result[0],
+                    sha256_result[1],
+                    sha256_result[2],
+                    sha256_result[3]);
+            LOG("Calc discover_response sign: %s\r\n", sign_str);  
+
+            cJSON_AddStringToObject(resp, "sign", sign_str);
+
+            char *json_reply = cJSON_PrintUnformatted(resp);
+            if(json_reply != NULL)
+            {
+                LOG("UDP Send JSON:\r\n%s\r\n", json_reply);
+                uint16_t send_len = strlen(json_reply);
+                struct pbuf *p_tx = pbuf_alloc(PBUF_TRANSPORT, send_len, PBUF_POOL);
+                if(p_tx != NULL)
+                {
+                    memcpy(p_tx->payload, json_reply, send_len);
+                    err_t ret = udp_sendto(upcb, p_tx, IP_ADDR_BROADCAST, UDP_LISTEN_PORT);
+                    LOG("UDP send status:%d\r\n", ret);
+                    pbuf_free(p_tx);
+                }
+                free(json_reply);
+                g_seq++;
+            }
+            cJSON_Delete(resp);
+        }
+    }
+    // UDP接收配网配置报文
+    else if(strcmp(type->valuestring, "config_set") == 0)
+    {
+        cJSON *target_mac  = cJSON_GetObjectItem(root, "target_mac");
+        cJSON *target_sn   = cJSON_GetObjectItem(root, "target_sn");
+        cJSON *ip          = cJSON_GetObjectItem(root, "ip");
+        cJSON *netmask     = cJSON_GetObjectItem(root, "netmask");
+        cJSON *gateway     = cJSON_GetObjectItem(root, "gateway");
+        cJSON *host_ip     = cJSON_GetObjectItem(root, "host_ip"); // 新增服务器IP字段
+        cJSON *host_mac    = cJSON_GetObjectItem(root, "host_mac");
+        cJSON *ts          = cJSON_GetObjectItem(root, "ts");
+        cJSON *seq         = cJSON_GetObjectItem(root, "seq");
+        cJSON *sign        = cJSON_GetObjectItem(root, "sign");
+
+        if(!target_mac || !target_sn || !ip || !netmask || !gateway || !host_ip || !host_mac ||
+            !ts || !seq || !sign)
+        {
+            LOG("KEY value verification failed!\r\n");
+            goto udp_task_err;
+        }
+
+        char local_mac[32] = {0};
+        snprintf(local_mac, sizeof(local_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                gnetif.hwaddr[0], gnetif.hwaddr[1], gnetif.hwaddr[2],
+                gnetif.hwaddr[3], gnetif.hwaddr[4], gnetif.hwaddr[5]);
+
+        if(strcmp(target_mac->valuestring, local_mac) != 0)
+        {
+            LOG("MAC address verification failed!\r\n");
+            goto udp_task_err;
+        }
+
+        if(strcmp(target_sn->valuestring, DEVICE_SN) != 0)
+        {
+            LOG("SN verification failed!\r\n");
+            goto udp_task_err;
+        }
+
+        uint64_t now_ts = Time_To_Unix();
+        int64_t time_diff = llabs((int64_t)now_ts - (int64_t)ts->valuedouble);
+         if(time_diff > TIME_VALID_SEC)
+        {
+            LOG("Time verification failed!\r\n");
+            // goto udp_task_err;
+        }
+
+        uint32_t curr_seq = (uint32_t)seq->valuedouble;
+        if(curr_seq != g_last_cfg_seq)
+        {
+            LOG("Sequence number verification failed!\r\n");
+            // goto udp_task_err;
+        }
+         g_last_cfg_seq = curr_seq;
+
+        memset(sign_buf_req, 0, sizeof(sign_buf_req));
+        char ts_str_config[21] = {0};
+        uint64_to_str((uint64_t)ts->valuedouble, ts_str_config);
+
+        snprintf(sign_buf_req, sizeof(sign_buf_req)-1,
+            "{\"gateway\":\"%s\",\"host_ip\":\"%s\",\"host_mac\":\"%s\",\"ip\":\"%s\",\"netmask\":\"%s\",\"seq\":%lu,\"target_mac\":\"%s\",\"target_sn\":\"%s\",\"ts\":%s,\"type\":\"%s\"}",
+            gateway->valuestring,
+            host_ip->valuestring,
+            host_mac->valuestring,
+            ip->valuestring,
+            netmask->valuestring,
+            (unsigned long)curr_seq,
+            target_mac->valuestring,
+            target_sn->valuestring,
+            ts_str_config,
+            "config_set");
+
+
+        LOG("UDP Sorted config_set JSON:\r\n%s\r\n", sign_buf_req);
+
+        uint8_t calc_hash[32] = {0};
+        hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+        hmac_sha256_update(&hmac, (const uint8_t *)sign_buf_req, strlen(sign_buf_req));
+        hmac_sha256_final(&hmac, calc_hash);
+
+        char calc_sign[9] = {0};
+        snprintf(calc_sign, sizeof(calc_sign), "%02X%02X%02X%02X",
+                calc_hash[0], calc_hash[1], 
+                calc_hash[2], calc_hash[3]);
+
+        LOG("UDP Calc config_set sign:\r\n%s\r\n", calc_sign);
+
+        if(strcmp(sign->valuestring, calc_sign) != 0)
+        {
+            LOG("Invalid sign, discard the packet\r\n");
+            goto udp_task_err;
+        }
+
+        ip4_addr_t ip_addr, mask_addr, gw_addr, srv_addr;
+        ipaddr_aton(ip->valuestring, &ip_addr);
+        ipaddr_aton(netmask->valuestring, &mask_addr);
+        ipaddr_aton(gateway->valuestring, &gw_addr);
+        ipaddr_aton(host_ip->valuestring, &srv_addr);
+
+        netif_set_ipaddr(&gnetif, &ip_addr);//设置网卡本机 IPv4 地址
+        netif_set_netmask(&gnetif, &mask_addr);//设置子网掩码，划定同网段范围
+        netif_set_gw(&gnetif, &gw_addr);//设置网关，跨网段转发路由出口
+
+        g_server_ip = srv_addr;
+        g_network_configured = 1;
+
+        memcpy(g_net_cfg.ip, &ip_addr.addr, 4);
+        memcpy(g_net_cfg.netmask, &mask_addr.addr, 4);
+        memcpy(g_net_cfg.gateway, &gw_addr.addr, 4);
+        memcpy(g_net_cfg.server_ip, &srv_addr.addr, 4);
+
+        net_config_save();
+        autoip_stop(&gnetif);// 关闭自动IP，防止篡改固定地址
+        netif_set_down(&gnetif);// 重启网口让新IP正式生效
+        netif_set_up(&gnetif);
+        gnetif.flags |= NETIF_FLAG_BROADCAST;// 重启后再次确保广播权限
+
+        LOG("Distribution network successfully and Flash saved\r\n");
+        print_local_ip();
+        osDelay(300); // 短暂延时等待网络/IP稳定
+        udp_send_device_online(upcb,2);//软件重启
+    }
+
+udp_task_err:
+    cJSON_Delete(root);
+}
+
+/**
+ * @brief  UDP接收回调函数
+ * @param  addr: 上位机IP地址
+ * @param  port: 上位机端口
+ * @note   回调仅拷贝入队，不做解析运算，规避栈溢出
+ */
+static void udp_recv_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+{
+    if(p == NULL) return;
+    if(udp_msg_queue == NULL)
+    {
+        pbuf_free(p);
+        return;
+    }
+
+    UdpMsgTypeDef msg;
+    uint16_t copy_len = p->len < sizeof(msg.data)-1 ? p->len : (sizeof(msg.data)-1);
+    memcpy(msg.data, p->payload, copy_len);
+    msg.data[copy_len] = 0;
+    msg.len = copy_len;
+    msg.src_ip = *addr;
+    msg.src_port = port;
+
+    xQueueSend(udp_msg_queue, &msg, 0);
+    pbuf_free(p);
+}
+
+
+//=====================================================================
+// TCP 客户端任务（配网成功才连接，连接后自动发心跳）
+void tcp_client_task(void *arg)
+{
+    static uint32_t stable_tick = 0;
+    static uint32_t reconnect_tick = 0;
+    const uint32_t stable_delay = 2000; // IP生效后延时2秒再连接
+    const uint32_t reconnect_interval = 5000; // 失败后5秒才能再次重连
+    static uint8_t bTimerInit = 0;
+    if(!bTimerInit)
+    {
+        bTimerInit = 1;
+        xHeartbeatTimer = xTimerCreate("hbTimer", pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS), pdTRUE, 0, vHeartbeatTimerCallback);
+        xTimerStart(xHeartbeatTimer, portMAX_DELAY);
+        vTaskPrioritySet(xTimerGetTimerDaemonTaskHandle(), 6);
+    }
+
+    while(1)
+    {
+        if(g_network_configured == 0)
+        {
+            stable_tick = 0;
+            reconnect_tick = 0;
+            g_tcp_connected = 0;
+            bSendHeartbeatFlag = 0;
+            if(tcp_pcb != NULL)
+            {
+                tcp_abort(tcp_pcb);
+                tcp_pcb = NULL;
+            }
+            osDelay(500);
+            continue;
+        }
+
+        // 已连接：定时发心跳，纯单向发送，不等待回复
+        if(tcp_pcb != NULL && g_tcp_connected == 1 && g_network_configured == 1)
+        {
+            // 1. 定时发心跳（上位机不回也发）
+            if(bSendHeartbeatFlag)
+            {
+                bSendHeartbeatFlag = 0;
+                LOG("TCP Send heartbeat message!\r\n");
+                // 填充参数
+                HeartBeatParam_t hb_param = {0};
+                hb_param.run_status = main_sys_status.is_Busy; // 运行状态直接取自系统忙标志
+                hb_param.last_period_seq = 99;//最后执行的周期序号，目前无
+                hb_param.last_sub_index = 3;//最后执行的次序号，目前无
+                if(g_task_id[0] == '\0')
+                {
+                    strncpy(hb_param.last_task_id,"NONE",sizeof(hb_param.last_task_id)-1);
+                }
+                else
+                {
+                    strncpy(hb_param.last_task_id, g_task_id, sizeof(hb_param.last_task_id)-1);
+                }
+                hb_param.last_task_result = 1;//最后任务结果，目前无，默认成功
+
+                // 填充
+                for(int i = 0; i < INJECTOR_CNT; i++)
+                {
+                    _INJECTOR_INFO *p_inj = &main_sys_status.injector[i];//映射对应注油口状态
+                    hb_param.cap_arr[i].inj_id  = p_inj->injector_id;
+                    hb_param.cap_arr[i].inj_vs  = p_inj->volume;        //单次目标油量
+                    hb_param.cap_arr[i].inj_tr  = p_inj->executionTime;  //单次注油耗时ms
+                    hb_param.cap_arr[i].inj_ts  = p_inj->interval;       //注油间隔ms
+
+                    // inj_st：0空闲、1运行、2故障
+                    if(p_inj->injectRequest == 66)//当前注油口执行成功
+                        hb_param.cap_arr[i].inj_st = 0;//空闲
+                    else if(p_inj->injectRequest == 99)//执行失败
+                        hb_param.cap_arr[i].inj_st = 2;//故障
+                    else if(main_sys_status.is_Busy && (task_object_list[i].task_status == 1))//忙碌且任务列表有任务
+                        hb_param.cap_arr[i].inj_st = 1;//运行
+                    else
+                        hb_param.cap_arr[i].inj_st = 0;
+
+                    hb_param.cap_arr[i].inj_jr = INJ_DEFAULT_JR;//今日注油次数，目前无
+                }
+
+                // 发送心跳
+                tcp_send_heartbeat(&hb_param);
+            }
+        }
+        if(tcp_pcb == NULL)// TCP自动重连
+        {
+            if(stable_tick == 0)
+            {
+                stable_tick = osKernelGetTickCount();
+                reconnect_tick = osKernelGetTickCount();
+            }
+            // 等待网络参数稳定
+            if((osKernelGetTickCount() - stable_tick < pdMS_TO_TICKS(stable_delay)) ||
+               (osKernelGetTickCount() - reconnect_tick < pdMS_TO_TICKS(reconnect_interval)))
+            {
+                osDelay(100);
+                continue;
+            }
+            tcp_pcb = tcp_new();
+            LOG("TCP reconnection......\r\n");
+            if(tcp_pcb != NULL)
+            {
+                // 绑定错误回调
+                tcp_pcb->errf = tcp_error_callback;
+                LOG("Start connect server IP:%d.%d.%d.%d PORT:%d\r\n",
+                    ip4_addr1(&g_server_ip),ip4_addr2(&g_server_ip),
+                    ip4_addr3(&g_server_ip),ip4_addr4(&g_server_ip),
+                    TCP_SERVER_PORT);
+                    
+                err_t ret = tcp_connect(tcp_pcb, &g_server_ip, TCP_SERVER_PORT, tcp_connected_cb);
+                if(ret != ERR_OK)
+                {
+                    tcp_pcb = NULL;
+                    g_tcp_connected = 0;
+                    stable_tick = 0;
+                    reconnect_tick = osKernelGetTickCount();
+                    osDelay(1500);
+                }
+            }
+            else // tcp_new 分配失败，直接重置重连计时，等待内存回收
+            {
+                LOG("tcp_new() failed, out of memory!\r\n");
+                tcp_pcb = NULL;
+                reconnect_tick = osKernelGetTickCount();
+                osDelay(2000); // 强制延时2秒，给内存池回收时间
+            }
+        }
+        osDelay(1000);//增加到1s
+    }
+}
+
+// TCP 错误回调（被动断连或连接建立失败都会调用，err参数区分原因）
+static void tcp_error_callback(void *arg, err_t err)
+{
+    struct tcp_pcb *pcb = (struct tcp_pcb *)arg;
+    if(pcb != NULL)
+    {
+        tcp_err(pcb, NULL); 
+        tcp_abort(pcb);
+    }
+    tcp_pcb = NULL;
+    g_tcp_connected = 0;// 链路异常，清空连接标记
+    bSendHeartbeatFlag = 0;
+    reconnect_tick = osKernelGetTickCount();
+    LOG("TCP link error, code:%d\r\n", err);
+    if(err == ERR_MEM)// 针对内存不足错误，强制延时，避免疯狂重试
+    {
+        osDelay(2000);
+    }
+}
+
+// TCP 连接成功回调
+static err_t tcp_connected_cb(void *arg, struct tcp_pcb *tpcb, err_t err)
+{
+    if(err != ERR_OK)
+    {
+        LOG("TCP handshake fail\r\n");
+        tcp_pcb = NULL;
+        g_tcp_connected = 0;  // 连接失败，清空标记
+        return err;
+    }
+    // tcp_err(tpcb, NULL);
+    LOG("TCP connect success!\r\n");
+    g_tcp_connected = 1;  // 三次握手成功，标记已连接
+    tcp_recv(tpcb, tcp_recv_cb);
+    tcp_send_register();
+    return ERR_OK;
+}
+
+// TCP 接收回调
+static err_t tcp_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
+{
+    if(err != ERR_OK || p == NULL)
+    {
+        tcp_close(tpcb);
+        tcp_pcb = NULL;
+        g_tcp_connected = 0;  // 被动断连，清空标记
+        bSendHeartbeatFlag = 0;
+        return ERR_CLSD;
+    }
+
+    memset(tcp_rx_buf, 0, RX_BUF_SIZE);
+    uint16_t recv_len = p->len < (RX_BUF_SIZE - 1) ? p->len : (RX_BUF_SIZE - 1);
+    memcpy(tcp_rx_buf, p->payload, recv_len);
+
+    tcp_parse_cmd(tpcb, tcp_rx_buf);
+    tcp_recved(tpcb, p->len);
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+// 按协议发送心跳报文
+static void tcp_send_heartbeat(HeartBeatParam_t *p_param)
+{
+    if(p_param == NULL)
+    {
+        return;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON *cap = cJSON_CreateArray();
+    uint64_t ts = Time_To_Unix();
+
+    // 遍历8路油口，从入参填数据
+    for(int i = 0; i < INJECTOR_CNT; i++)
+    {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "inj_id",    p_param->cap_arr[i].inj_id);
+        cJSON_AddNumberToObject(item, "inj_jr",    p_param->cap_arr[i].inj_jr);
+        cJSON_AddNumberToObject(item, "inj_st",    p_param->cap_arr[i].inj_st);
+        cJSON_AddNumberToObject(item, "inj_tr",    p_param->cap_arr[i].inj_tr);
+        cJSON_AddNumberToObject(item, "inj_ts",    p_param->cap_arr[i].inj_ts);
+        cJSON_AddNumberToObject(item, "inj_vs",    p_param->cap_arr[i].inj_vs);
+        cJSON_AddItemToArray(cap, item);
+    }
+
+    // 签名用临时对象
+    cJSON *temp_root = cJSON_CreateObject();//cJSON 构造一个与最终报文结构完全相同的临时对象（不含 sign）
+    cJSON *cap_copy = cJSON_Duplicate(cap, 1);// 深拷贝数组，避免直接使用 cap
+    cJSON_AddItemToObject(temp_root, "capability", cap_copy);
+    cJSON_AddStringToObject(temp_root, "device_id", DEVICE_ID);
+    cJSON_AddNumberToObject(temp_root, "last_period_seq", p_param->last_period_seq);
+    cJSON_AddNumberToObject(temp_root, "last_sub_index", p_param->last_sub_index);
+    cJSON_AddStringToObject(temp_root, "last_task_id", p_param->last_task_id);
+    cJSON_AddNumberToObject(temp_root, "last_task_result", p_param->last_task_result);
+    cJSON_AddNumberToObject(temp_root, "run_status", p_param->run_status);
+    cJSON_AddNumberToObject(temp_root, "seq", g_seq);
+    cJSON_AddNumberToObject(temp_root, "ts", ts);
+    cJSON_AddStringToObject(temp_root, "type", "heartbeat");
+
+    // 生成无sign的JSON字符串
+    char *json_without_sign = cJSON_PrintUnformatted(temp_root);
+    if (!json_without_sign) {
+        cJSON_Delete(temp_root);
+        cJSON_Delete(cap);
+        cJSON_Delete(root);
+        return;
+    }
+    LOG("TCP Sorted heartbeat JSON:\r\n%s\r\n", json_without_sign);
+    uint8_t hash[32];
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)json_without_sign, strlen(json_without_sign));
+    hmac_sha256_final(&hmac, hash);
+    
+    char sign_str[9];
+    snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X", 
+            hash[0], hash[1], hash[2], hash[3]);
+    
+    cJSON_AddItemToObject(root, "capability", cap);
+    cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
+    cJSON_AddNumberToObject(root, "last_period_seq", p_param->last_period_seq);
+    cJSON_AddNumberToObject(root, "last_sub_index", p_param->last_sub_index);
+    cJSON_AddStringToObject(root, "last_task_id", p_param->last_task_id);
+    cJSON_AddNumberToObject(root, "last_task_result", p_param->last_task_result);
+    cJSON_AddNumberToObject(root, "run_status", p_param->run_status);
+    cJSON_AddNumberToObject(root, "seq", g_seq);
+    cJSON_AddStringToObject(root, "sign", sign_str);
+    cJSON_AddNumberToObject(root, "ts", ts);
+    cJSON_AddStringToObject(root, "type", "heartbeat");
+
+    char *str = cJSON_PrintUnformatted(root);
+
+    if(str)
+    {
+        LOG("TCP Send JSON:\r\n%s\r\n", str);
+        tcp_send_str(tcp_pcb, str);
+        free(str);
+        g_seq++;
+    }
+    free(json_without_sign);
+    cJSON_Delete(temp_root);
+    cJSON_Delete(root);
+}
+
+// 解析网关下发指令
+static void tcp_parse_cmd(struct tcp_pcb *tpcb, char *buf)
+{
+    char *sign_src = NULL;    // 统一指向签名字符串
+    cJSON *temp_sign = NULL;
+
+    LOG("TCP Recv JSON:\r\n%s\r\n", buf);
+    cJSON *root = cJSON_Parse(buf);
+    if(!root) return;
+
+    cJSON *type    = cJSON_GetObjectItem(root, "type");
+    cJSON *device_id = cJSON_GetObjectItem(root, "device_id");
+    cJSON *seq     = cJSON_GetObjectItem(root, "seq");
+    cJSON *ts      = cJSON_GetObjectItem(root, "ts");
+    cJSON *sign    = cJSON_GetObjectItem(root, "sign");
+
+    if(!type || type->type != cJSON_String)            goto exit;
+    if(!device_id || device_id->type != cJSON_String)  goto exit;
+    if(!seq || seq->type != cJSON_Number)              goto exit;
+    if(!ts || ts->type != cJSON_Number)                goto exit;
+    if(!sign || sign->type != cJSON_String)            goto exit;
+
+    if(strcmp(device_id->valuestring, DEVICE_ID) != 0) goto exit;
+
+    uint32_t curr_seq = (uint32_t)seq->valuedouble;
+    uint64_t curr_ts  = (uint64_t)ts->valuedouble;
+
+    uint64_t now_ts = Time_To_Unix();
+    int64_t time_diff = llabs((int64_t)now_ts - (int64_t)curr_ts);
+    if(time_diff > TIME_VALID_SEC)  
+    {
+        LOG("Time verification failed!\r\n");
+        // goto exit;
+    }
+
+    if(curr_seq == g_last_cmd_seq)
+    {
+        LOG("Sequence number verification failed!\r\n");
+        // goto exit;
+    }
+    g_last_cmd_seq = curr_seq;
+
+    char ts_cmd_str[21] = {0};
+    uint64_to_str(curr_ts, ts_cmd_str);
+
+    memset(g_task_order_buf, 0, sizeof(g_task_order_buf));
+    g_task_order_cnt = 0;
+    memset(tcp_sign_buf_2048, 0, sizeof(tcp_sign_buf_2048));
+
+    if(strcmp(type->valuestring, "task_order") == 0)
+    {
+        cJSON *task_info_arr = cJSON_GetObjectItem(root, "task_info");
+        if(!task_info_arr ||  task_info_arr->type != cJSON_Array) goto exit;
+
+        int arr_size = cJSON_GetArraySize(task_info_arr);
+
+        for(int i = 0; i < arr_size && i < TASK_DATA_MAX; i++)
+        {
+            cJSON *item = cJSON_GetArrayItem(task_info_arr, i);
+            if(!item) continue;
+
+            // 严格按英文字典序获取字段
+            cJSON *p_inj_id      = cJSON_GetObjectItem(item, "inj_id");
+            cJSON *p_inj_v       = cJSON_GetObjectItem(item, "inj_v");
+            cJSON *p_period_seq  = cJSON_GetObjectItem(item, "period_seq");
+            cJSON *p_remaining   = cJSON_GetObjectItem(item, "remaining");
+            cJSON *p_sub_index   = cJSON_GetObjectItem(item, "sub_index");
+            cJSON *p_sub_total   = cJSON_GetObjectItem(item, "sub_total");
+            cJSON *p_sub_volume  = cJSON_GetObjectItem(item, "sub_volume");
+            cJSON *p_task_id     = cJSON_GetObjectItem(item, "task_id");
+            cJSON *p_task_type   = cJSON_GetObjectItem(item, "task_type");
+            
+            // 字段必填合法性校验
+            if(!p_task_id || !p_task_type || !p_inj_id || !p_inj_v )
+            {
+                continue;
+            }
+
+            TaskOrderInfo_t *p_buf = &g_task_order_buf[g_task_order_cnt];
+            memset(p_buf,0,sizeof(TaskOrderInfo_t));
+            strncpy(p_buf->task_id, p_task_id->valuestring, sizeof(p_buf->task_id) - 1);
+            p_buf->task_type  = (uint16_t)p_task_type->valuedouble;
+            p_buf->inj_id     = (uint16_t)p_inj_id->valuedouble;
+            p_buf->inj_v      = (uint16_t)p_inj_v->valuedouble;
+
+            // 选填字段存在才赋值，不存在保持0
+            if(p_sub_index && p_sub_index->type == cJSON_Number)
+                p_buf->sub_index = (uint16_t)p_sub_index->valuedouble;
+            if(p_sub_total && p_sub_total->type == cJSON_Number)
+                p_buf->sub_total = (uint16_t)p_sub_total->valuedouble;
+            if(p_sub_volume && p_sub_volume->type == cJSON_Number)
+                p_buf->sub_volume = (uint16_t)p_sub_volume->valuedouble;
+            if(p_remaining && p_remaining->type == cJSON_Number)
+                p_buf->remaining = (uint16_t)p_remaining->valuedouble;
+            if(p_period_seq && p_period_seq->type == cJSON_Number)
+                p_buf->period_seq = (uint64_t)p_period_seq->valuedouble;
+
+            g_task_order_cnt++;
+        }
+        //将任务逐条加入到队列
+        for(int i = 0; i < g_task_order_cnt; i++)
+        {
+            TaskInfo_t item;
+            item.inj_id = g_task_order_buf[i].inj_id;
+            item.inj_v  = g_task_order_buf[i].inj_v;
+            // 入队，超时10ms
+            xQueueSend(xTcpTaskQueue, &item, pdMS_TO_TICKS(10));
+        }
+        // 新建临时cJSON，按字典序构造签名原文
+        temp_sign = cJSON_CreateObject();
+        if(!temp_sign) goto exit;
+        cJSON *arr_copy  = cJSON_Duplicate(task_info_arr, 1); // 深拷贝数组
+        if(!arr_copy) goto exit;
+        // 字典序：device_id → seq → task_info → ts → type
+        cJSON_AddStringToObject(temp_sign, "device_id", DEVICE_ID);
+        cJSON_AddNumberToObject(temp_sign, "seq", curr_seq);
+        cJSON_AddItemToObject(temp_sign, "task_info", arr_copy);
+        cJSON_AddNumberToObject(temp_sign, "ts", curr_ts);
+        cJSON_AddStringToObject(temp_sign, "type", "task_order");
+
+        // 导出签名字符串
+        sign_src = cJSON_PrintUnformatted(temp_sign);
+        if(sign_src)
+        {
+            LOG("TCP Sorted task_order JSON:\r\n%s\r\n", sign_src);
+        }
+    }
+    else if(strcmp(type->valuestring, "state_request") == 0)
+    {
+        snprintf(tcp_sign_buf_2048, sizeof(tcp_sign_buf_2048),
+            "{\"device_id\":\"%s\",\"seq\":%lu,\"ts\":%s,\"type\":\"%s\"}",
+            DEVICE_ID,
+            (unsigned long)curr_seq,
+            ts_cmd_str,
+            "state_request"
+        );
+        LOG("TCP Sorted state_request JSON:\r\n%s\r\n", tcp_sign_buf_2048);
+        sign_src = tcp_sign_buf_2048;
+    }
+    else if(strcmp(type->valuestring, "task_empty") == 0)
+    {
+        cJSON *msg = cJSON_GetObjectItem(root, "message");
+        cJSON *wait = cJSON_GetObjectItem(root, "wait_time");
+        if(!msg || msg->type != cJSON_String || !wait || wait->type != cJSON_Number)
+        {
+            goto exit;
+        }
+        // 字典序：device_id → seq → message → wait_time → ts → type
+        snprintf(tcp_sign_buf_2048, sizeof(tcp_sign_buf_2048),
+            "{\"device_id\":\"%s\",\"seq\":%lu,\"message\":\"%s\",\"wait_time\":%d,\"ts\":%s,\"type\":\"task_empty\"}",
+            DEVICE_ID,
+            (unsigned long)curr_seq,
+            msg->valuestring,
+            (int)wait->valuedouble,
+            ts_cmd_str);
+
+        LOG("TCP Sorted task_empty JSON:\r\n%s\r\n", tcp_sign_buf_2048);
+        sign_src = tcp_sign_buf_2048;
+    }
+    else if(strcmp(type->valuestring, "stop_task") == 0)
+    {
+        cJSON *task_id = cJSON_GetObjectItem(root, "task_id");
+        if(!task_id || task_id->type != cJSON_String)
+        {
+            goto exit;
+        }
+        // 字典序：device_id → seq → task_id → ts → type
+        snprintf(tcp_sign_buf_2048, sizeof(tcp_sign_buf_2048),
+            "{\"device_id\":\"%s\",\"seq\":%lu,\"task_id\":\"%s\",\"ts\":%s,\"type\":\"stop_task\"}",
+            DEVICE_ID,
+            (unsigned long)curr_seq,
+            task_id->valuestring,
+            ts_cmd_str);
+        LOG("TCP Sorted stop_task JSON:\r\n%s\r\n", tcp_sign_buf_2048);
+        sign_src = tcp_sign_buf_2048;
+    }
+    else
+    {
+        goto exit;
+    }
+
+    if(sign_src == NULL || strlen(sign_src) == 0)
+    {
+        goto exit;
+    }
+    uint8_t calc_hash[32] = {0};
+    char calc_sign[9] = {0};
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)sign_src, strlen(sign_src));
+    hmac_sha256_final(&hmac, calc_hash);
+    snprintf(calc_sign, sizeof(calc_sign), "%02X%02X%02X%02X",
+            calc_hash[0], calc_hash[1], calc_hash[2], calc_hash[3]);
+
+    LOG("Calc TCP sign: %s\r\n", calc_sign);         
+    if(strcmp(sign->valuestring, calc_sign) != 0)
+    {
+        LOG("sign check failed\r\n");
+        goto exit;
+    }
+    LOG("TCP received message successfully!\r\n");
+exit:
+    if(temp_sign != NULL)
+    {
+        cJSON_Delete(temp_sign);
+    }
+    if(sign_src != tcp_sign_buf_2048 && sign_src != NULL)
+    {
+        free(sign_src);
+    }
+    cJSON_Delete(root);
+}
+
+// TCP 发送字符串
+static void tcp_send_str(struct tcp_pcb *tpcb, const char *str)
+{
+    if(tpcb == NULL || str == NULL) return;
+    tcp_write(tpcb, str, strlen(str), TCP_WRITE_FLAG_COPY);
+    tcp_output(tpcb);
+}
+
+// TCP 连接成功后立即发送 register 注册报文
+static void tcp_send_register(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    uint64_t ts = Time_To_Unix();
+    char mac_str[32] = {0};
+    uint8_t *mac = gnetif.hwaddr;
+
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    memset(sign_buf_register, 0, sizeof(sign_buf_register));
+    char ts_online_str[21] = {0};
+    uint64_to_str(ts, ts_online_str);
+
+    snprintf(sign_buf_register, sizeof(sign_buf_register) - 1,
+        "{\"device_id\":\"%s\",\"firmware_ver\":\"%s\",\"mac\":\"%s\",\"model\":\"%s\",\"seq\":%lu,\"ts\":%s,\"type\":\"register\"}",
+        DEVICE_ID,
+        DEVICE_FW_VER,
+        mac_str,
+        DEVICE_MODEL,
+        (unsigned long)g_seq,
+        ts_online_str);
+    LOG("TCP Sorted register JSON:\r\n%s\r\n", sign_buf_register);
+
+    uint8_t hash[32] = {0};
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)sign_buf_register, strlen(sign_buf_register));
+    hmac_sha256_final(&hmac, hash);
+
+    char sign_str[9] = {0};
+    snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X",
+             hash[0], hash[1], hash[2], hash[3]);
+
+    cJSON_AddStringToObject(root, "type", "register");
+    cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
+    cJSON_AddStringToObject(root, "mac", mac_str);
+    cJSON_AddStringToObject(root, "model", DEVICE_MODEL);
+    cJSON_AddStringToObject(root, "firmware_ver", DEVICE_FW_VER);
+    cJSON_AddNumberToObject(root, "ts", ts);
+    cJSON_AddNumberToObject(root, "seq", g_seq);
+    cJSON_AddStringToObject(root, "sign", sign_str);
+
+    char *str = cJSON_PrintUnformatted(root);
+    if(str)
+    {
+        LOG("TCP Send JSON:\r\n%s\r\n", str);
+        tcp_send_str(tcp_pcb, str);
+        free(str);
+        g_seq++;
+    }
+    cJSON_Delete(root);
+}
+
+/**
+ * @brief  发送 task_request 任务请求报文
+ * @param  info_arr: TaskInfo_t 数组首地址
+ * @param  arr_len: 数组元素个数
+ */
+void tcp_send_task_request(TaskInfo_t *info_arr, uint16_t arr_len)
+{
+    if(info_arr == NULL || arr_len == 0)
+    {
+        LOG("task info array is empty!\r\n");
+        return;
+    }
+
+    cJSON *root = cJSON_CreateObject();// 最终发送根节点
+    cJSON *task_info_arr = cJSON_CreateArray();// task_info 数组
+    for (uint16_t i = 0; i < arr_len; i++)
+    {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "inj_id", info_arr[i].inj_id);
+        cJSON_AddNumberToObject(item, "inj_v", info_arr[i].inj_v);
+        cJSON_AddItemToArray(task_info_arr, item);
+    }
+
+    uint64_t ts = Time_To_Unix();
+
+    cJSON *temp_root = cJSON_CreateObject();// 2. 构造签名用的临时cJSON对象(不含 sign 字段)
+    cJSON *task_info_copy = cJSON_Duplicate(task_info_arr, 1); // 深拷贝数组，隔离最终报文与签名报文
+    
+    cJSON_AddStringToObject(temp_root, "device_id", DEVICE_ID);
+    cJSON_AddNumberToObject(temp_root, "seq", g_seq);
+    cJSON_AddItemToObject(temp_root, "task_info", task_info_copy);
+    cJSON_AddNumberToObject(temp_root, "ts", ts); 
+    cJSON_AddStringToObject(temp_root, "type", "task_request");
+
+    char *json_no_sign = cJSON_PrintUnformatted(temp_root);
+    if (json_no_sign == NULL)
+    {
+        cJSON_Delete(task_info_arr);
+        cJSON_Delete(temp_root);
+        cJSON_Delete(root);
+        return;
+    }
+    LOG("TCP Sorted task_request JSON:\r\n%s\r\n", json_no_sign);
+
+    // HMAC-SHA256 签名计算
+    uint8_t hash[32] = {0};
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)json_no_sign, strlen(json_no_sign));
+    hmac_sha256_final(&hmac, hash);
+
+    char sign_str[9] = {0};
+    snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X",
+             hash[0], hash[1], hash[2], hash[3]);
+
+    // 组装最终发送报文（字段顺序无要求，ts 使用数字格式）
+    cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
+    cJSON_AddItemToObject(root, "task_info", task_info_arr);
+    cJSON_AddNumberToObject(root, "seq", g_seq);
+    cJSON_AddNumberToObject(root, "ts", ts); 
+    cJSON_AddStringToObject(root, "type", "task_request");
+    cJSON_AddStringToObject(root, "sign", sign_str);
+
+    // 发送报文
+    char *str = cJSON_PrintUnformatted(root);
+    if(str)
+    {
+        tcp_send_str(tcp_pcb, str);
+        LOG("TCP Send JSON:\r\n%s\r\n", str);
+        free(str);
+        g_seq++;
+    }
+
+    cJSON_Delete(root);
+}
+// 执行结果上报
+void tcp_send_execute_result(ExecuteResultInfo_t *info_arr, uint16_t arr_len)
+{
+    if(info_arr == NULL || arr_len == 0)
+    {
+        LOG("execute result array is empty!\r\n");
+        return;
+    }
+
+    // 最终发送根节点
+    cJSON *root = cJSON_CreateObject();
+    // task_info 数组
+    cJSON *task_info_arr = cJSON_CreateArray();
+
+    // 填充数组子项
+    for (uint16_t i = 0; i < arr_len; i++)
+    {
+        cJSON *item = cJSON_CreateObject();
+           // 严格按字典序添加
+        cJSON_AddNumberToObject(item, "actual_volume", info_arr[i].actual_volume);
+        cJSON_AddNumberToObject(item, "duration_ms",    info_arr[i].duration_ms);
+        cJSON_AddNumberToObject(item, "error_code",    info_arr[i].error_code);
+        cJSON_AddStringToObject(item, "error_msg",     info_arr[i].error_msg);
+        cJSON_AddNumberToObject(item, "execute_result", info_arr[i].execute_result);
+        cJSON_AddNumberToObject(item, "inj_id",        info_arr[i].inj_id);
+        cJSON_AddNumberToObject(item, "inj_v",         info_arr[i].inj_v);
+        cJSON_AddNumberToObject(item, "period_seq",    info_arr[i].period_seq);
+        cJSON_AddNumberToObject(item, "sub_index",     info_arr[i].sub_index);
+        cJSON_AddNumberToObject(item, "sub_remaining", info_arr[i].sub_remaining);
+        cJSON_AddNumberToObject(item, "sub_total",     info_arr[i].sub_total);
+        cJSON_AddStringToObject(item, "task_id",       info_arr[i].task_id);
+        cJSON_AddNumberToObject(item, "temperature",   info_arr[i].temperature);
+        cJSON_AddBoolToObject(item,   "temp_change",   info_arr[i].temp_change);
+        cJSON_AddNumberToObject(item, "voltage",       info_arr[i].voltage);
+        cJSON_AddBoolToObject(item,   "voltage_change", info_arr[i].voltage_change);
+
+        cJSON_AddItemToArray(task_info_arr, item);
+    }
+
+    uint64_t ts = Time_To_Unix();
+
+    // 构造签名用临时对象（不含 sign），字段严格字典序
+    cJSON *temp_root = cJSON_CreateObject();
+    cJSON *task_info_copy = cJSON_Duplicate(task_info_arr, 1);
+
+    // 字典序：device_id → seq → task_info → ts → type
+    cJSON_AddStringToObject(temp_root, "device_id", DEVICE_ID);
+    cJSON_AddNumberToObject(temp_root, "seq", g_seq);
+    cJSON_AddItemToObject(temp_root, "task_info", task_info_copy);
+    cJSON_AddNumberToObject(temp_root, "ts", ts);
+    cJSON_AddStringToObject(temp_root, "type", "execute_result");
+
+    char *json_no_sign = cJSON_PrintUnformatted(temp_root);
+    if (json_no_sign == NULL)
+    {
+        cJSON_Delete(task_info_arr);
+        cJSON_Delete(temp_root);
+        cJSON_Delete(root);
+        return;
+    }
+    LOG("TCP Sorted execute_result JSON:\r\n%s\r\n", json_no_sign);
+
+    // HMAC-SHA256 计算签名
+    uint8_t hash[32] = {0};
+    hmac_sha256_init(&hmac, (const uint8_t *)HMAC_KEY, strlen(HMAC_KEY));
+    hmac_sha256_update(&hmac, (const uint8_t *)json_no_sign, strlen(json_no_sign));
+    hmac_sha256_final(&hmac, hash);
+
+    char sign_str[9] = {0};
+    snprintf(sign_str, sizeof(sign_str), "%02X%02X%02X%02X",
+             hash[0], hash[1], hash[2], hash[3]);
+
+    // 组装最终发送报文（ts 为数字）
+    cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
+    cJSON_AddItemToObject(root, "task_info", task_info_arr);
+    cJSON_AddNumberToObject(root, "seq", g_seq);
+    cJSON_AddNumberToObject(root, "ts", ts);
+    cJSON_AddStringToObject(root, "type", "execute_result");
+    cJSON_AddStringToObject(root, "sign", sign_str);
+
+    // 发送报文
+    char *str = cJSON_PrintUnformatted(root);
+    if(str)
+    {
+        tcp_send_str(tcp_pcb, str);
+        LOG("TCP Send JSON:\r\n%s\r\n", str);
+        free(str);
+        g_seq++;
+    }
+
+    // 统一释放
+    free(json_no_sign);
+    cJSON_Delete(temp_root);
+    cJSON_Delete(root);
+}
+
+void TCP_task_processing_task(void *argument)
+{
+    TaskInfo_t recv_item;
+    while(1)
+    {
+        osDelay(10);
+        if(xQueueReceive(xTcpTaskQueue, &recv_item, portMAX_DELAY) == pdPASS)
+        {
+            // 找空槽写入任务表
+            uint8_t write_ok = 0;
+            for(uint8_t i = 0; i < 4; i++) // 只使用 0~3 槽，避开屏幕专用 4 号槽
+            {
+                if(task_object_list[i].task_status == 0)
+                {
+                    task_object_list[i].inject_id   = recv_item.inj_id;
+                    task_object_list[i].val         = recv_item.inj_v;
+                    task_object_list[i].task_status = 1;
+                    write_ok = 1;
+                    break;
+                }
+            }
+            if(!write_ok)
+            {
+                LOG("Task list full, drop tcp task: id=%d, vol=%d\r\n", recv_item.inj_id, recv_item.inj_v);
+            }  
+        }
+    }
+}
+
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include <stdio.h>
+
+void print_local_ip_2(void)
+{
+    const ip_addr_t *ip;
+    uint8_t last;
+    while(1)
+    {
+        ip = netif_ip4_addr(netif_default);
+        if(ip4_addr_isany(ip))
+        {
+            osDelay(200);
+            continue;
+        }
+        last = ip4_addr_get_u32(ip) & 0xFF;
+        if(last != 0 && last != 255)
+        {
+            printf("AutoIP OK: %s\r\n", ipaddr_ntoa(ip));
+            break;
+        }
+        osDelay(200);
+    }
+}
+
+void udp_echo_task(void *arg)
+{
+    int sockfd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char recv_buf[1024];
+    int recv_len;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(sockfd < 0)
+    {
+        printf("UDP socket create failed\r\n");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(5000);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if(bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        printf("UDP bind failed\r\n");
+        closesocket(sockfd);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    printf("UDP server listening on port 5000...\r\n");
+    print_local_ip_2();
+
+    while(1)
+    {
+        recv_len = recvfrom(sockfd, recv_buf, sizeof(recv_buf) - 1, 0,
+                            (struct sockaddr *)&client_addr, &addr_len);
+
+        if(recv_len > 0)
+        {
+            recv_buf[recv_len] = '\0';
+            printf("Recv from %s:%d, len=%d: %s\r\n",
+                   inet_ntoa(client_addr.sin_addr),
+                   ntohs(client_addr.sin_port),
+                   recv_len, recv_buf);
+
+            sendto(sockfd, recv_buf, recv_len, 0,
+                   (struct sockaddr *)&client_addr, addr_len);
+        }
+        else
+        {
+            osDelay(10);
+        }
+    }
+}

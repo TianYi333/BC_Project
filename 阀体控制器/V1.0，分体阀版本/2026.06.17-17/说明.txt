@@ -1,0 +1,7 @@
+减小了#define FAL_PART_TABLE                                                               \
+{                                                                                    \
+    {FAL_PART_MAGIC_WORD, "ef_kvdb1", NOR_FLASH_DEV_NAME,         0, 64*1024, 0}, \
+    {FAL_PART_MAGIC_WORD, "ef_kvdb2", NOR_FLASH_DEV_NAME, 64*1024, 64*1024, 0}, \
+}
+
+分区，使上端初始化阶段时间缩小。由1024->64

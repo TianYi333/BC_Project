@@ -1,0 +1,7 @@
+改动内容：新增 TFTP 接收看门狗
+
+宏 OTA_TFTP_RX_TIMEOUT_MS（默认 30 秒）
+新增 ota_monitor_task（栈 2048，osPriorityLow，1 秒轮询）+ ota_check_timeout() + 幂等的 ota_start_monitor()
+三个喂狗点：开启 TFTP 进 RX_ACTIVE、收到成功 WRQ、每收一个 DATA 块
+超时动作：上报 upgrade_status("rx_timeout", ...) → ota_reset_session() 回 IDLE 并关闭 TFTP 监听
+目的：解决「上位机不发 / 文件名错误不重试 / 传输中途卡死 → 永久卡在 OTA_RX_ACTIVE 拒绝新 upgrade」

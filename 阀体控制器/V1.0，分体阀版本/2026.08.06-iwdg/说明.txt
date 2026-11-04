@@ -1,0 +1,24 @@
+修改
+STM32H743XG_FLASH.ld
+_Min_Heap_Size = 0x10000;  
+  .Rx_PoolSection (NOLOAD) :
+  {
+      . = ALIGN(32);
+      *(.Rx_PoolSection)
+      *(lwip_mempool_RX_POOL*)
+      . = ALIGN(32);
+  } > RAM_D2
+
+
+void MPU_Config(void)
+
+  MPU_InitStruct.Number = MPU_REGION_NUMBER1;
+  MPU_InitStruct.BaseAddress = 0x30000000;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_16KB;  // 建议至少16KB
+  MPU_InitStruct.SubRegionDisable = 0x0;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL1;  // 核心修正！必须显式设置为Device类型
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;// 禁止执行代码
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE; // 必须启用共享
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;  // 冗余但安全
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
+

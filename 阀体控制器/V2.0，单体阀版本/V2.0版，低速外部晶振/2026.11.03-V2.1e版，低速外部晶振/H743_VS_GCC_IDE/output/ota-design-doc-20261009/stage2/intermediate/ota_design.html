@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>控制节点固件升级系统设计说明</title>
+<style>
+  :root { --ink:#1a1a1a; --accent:#1f4e79; }
+  body { font-family: "Microsoft YaHei","SimSun",sans-serif; color: var(--ink); line-height:1.6; }
+  h1 { color: var(--accent); text-align:center; font-size:26px; margin-top:24px; }
+  h2 { color: var(--accent); border-bottom:2px solid var(--accent); padding-bottom:4px; font-size:19px; }
+  h3 { color:#2e6da4; font-size:15.5px; }
+  h4 { color:#333; font-size:14px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:12.5px; }
+  th,td { border:1px solid #999; padding:5px 8px; text-align:left; vertical-align:top; }
+  th { background:#eef3f8; font-weight:bold; }
+  pre { background:#f5f5f5; border:1px solid #ddd; padding:10px; overflow:auto; font-size:11.5px; line-height:1.35; }
+  code { font-family:"Consolas","Courier New",monospace; }
+  blockquote { border-left:4px solid #ccc; margin:8px 0; padding:4px 12px; color:#555; background:#fafafa; }
+</style>
+</head>
+<body>
+<h1 id="ota">控制节点（注油控制器）固件远程升级（OTA）系统设计说明</h1>
+<blockquote>
+<p>版本 V1.0　编制日期 2026-10-09　适用范围：STM32H743ZGT6 注油控制器（Oil_Pump_Control 工程）
+配套代码：App 工程 <code>H743_VS_GCC_IDE</code>、<code>/d/Desktop/boot</code>（Boot 工程）、<code>/d/Desktop/OTA_Upgrade_Tool/ota_tftp_push.py</code>（上位机脚本）</p>
+</blockquote>
+<h2 id="_1">文档信息</h2>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文档名称</td>
+<td>控制节点（注油控制器）固件远程升级（OTA）系统设计说明</td>
+</tr>
+<tr>
+<td>版本</td>
+<td>V1.0</td>
+</tr>
+<tr>
+<td>适用设备</td>
+<td>STM32H743ZGT6 注油控制器（Oil_Pump_Control）</td>
+</tr>
+<tr>
+<td>运行环境</td>
+<td>FreeRTOS + lwIP(TCP/Modbus) + 外部 W25Q64(8MB) + 内部双 Bank Flash</td>
+</tr>
+<tr>
+<td>文档性质</td>
+<td>设计说明（已实现可用）</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_2">一、概述</h2>
+<h3 id="11">1.1 背景与目标</h3>
+<p>工业注油控制节点分布广、现场升级成本高。本设计实现设备固件的<strong>远程在线升级（OTA）</strong>，目标是在不停机、不拆机的前提下，通过以太网将新固件安全、可靠地下发到控制节点并完成烧录切换。</p>
+<p>设计的核心是<strong>防砖（brick-proof）</strong>：任何升级失败（断电、固件损坏、校验失败、新固件起不来）都不能让设备永久变砖，必须能自动回退到可运行的旧固件。</p>
+<h3 id="12">1.2 设计目标</h3>
+<ul>
+<li><strong>A/B 防砖</strong>：升级前先把当前可用 App 备份到外部 Flash，烧录失败自动回退。</li>
+<li><strong>断电可恢复</strong>：升级状态持久化在外部 SPI Flash 的 <code>ota_meta</code> 区，断电/异常重启后能续跑或回滚。</li>
+<li><strong>固件完整性校验</strong>：固件采用 CRC32 双重校验（外部 Flash 一次、烧录后内部 Flash 再校验一次）。</li>
+<li><strong>指令防伪造</strong>：控制指令采用 HMAC-SHA256 签名，拒绝非法/伪造的升级命令。</li>
+<li><strong>低侵入</strong>：升级链路独立于业务任务，App 接收、Boot 烧录职责清晰。</li>
+</ul>
+<h3 id="13">1.3 适用范围</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>设备类型</td>
+<td>注油控制器（Oil_Pump_Control，STM32H743ZGT6）</td>
+</tr>
+<tr>
+<td>通信协议</td>
+<td>控制通道 TCP（指令）+ 文件通道 TFTP（固件）</td>
+</tr>
+<tr>
+<td>网络环境</td>
+<td>以太网（eth0）</td>
+</tr>
+<tr>
+<td>TFTP 角色</td>
+<td>设备为 Server（UDP/69），上位机/网关为 Client（主动 put）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="14">1.4 实现状态对照</h3>
+<p>本协议与流程<strong>已在当前工程中完整实现并可用</strong>，区别于参考文档中"网关推送链路待开发"的占位项。下表对照参考文档 V2.1 的"实现状态"栏：</p>
+<table>
+<thead>
+<tr>
+<th>功能点</th>
+<th>本项目状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>设备侧 TFTP Server（UDP/69）</td>
+<td>已实现（<code>ota.c</code> + lwIP <code>tftp_server</code>）</td>
+</tr>
+<tr>
+<td>设备为 TFTP Server、上位机为 Client</td>
+<td>已实现（与参考文档一致）</td>
+</tr>
+<tr>
+<td>TCP 指令下发 + ack</td>
+<td>已实现（<code>upgrade_start</code> / <code>upgrade_start_ack</code>）</td>
+</tr>
+<tr>
+<td>固件落盘 + 完整性校验</td>
+<td>已实现（CRC32 双重校验）</td>
+</tr>
+<tr>
+<td>烧录 + 防砖回滚</td>
+<td>已实现（Boot <code>do_update</code> + <code>firmware_bak</code> 备份）</td>
+</tr>
+<tr>
+<td>HMAC 指令签名</td>
+<td>已实现（HMAC-SHA256，取摘要前 4 字节）</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_3">二、系统架构</h2>
+<h3 id="21">2.1 整体架构</h3>
+<pre><code>┌──────────────────────────────────────────────────────────────────────┐
+│                     上位机 ota_tftp_push.py                            │
+│  ① TCP 客户端：连接设备 TCP Server 端口 50010，发 upgrade_start      │
+│  ② TFTP 客户端：主动 put 固件到设备 TFTP Server（UDP 69）            │
+└───────────────────────────┬────────────────────────────────────────┘
+                              │ TCP(50010) upgrade_start / ack
+                              │ TFTP(UDP/69) 固件推送
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                         控制节点设备（H743）                          │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ App 工程（运行态）                                               │  │
+│  │  net_comm_task.c：TCP 收 upgrade_start → HMAC 校验               │  │
+│  │  ota.c：擦 firmware_a → 启 TFTP Server → 收块写 SPI + 增量CRC   │  │
+│  │        → 收满校验 → 写 ota_meta(PENDING) → 软复位               │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                              │ 复位                                   │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ Boot 工程（0x08000000，上电先跑）                                │  │
+│  │  main_boot.c：读 ota_meta → do_update                          │  │
+│  │   校验 firmware_a CRC → 备份当前 App 到 firmware_bak            │  │
+│  │   → 烧录内部 Flash BANK2 → 校验 → 置 DONE → 跳 App            │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                              │                                        │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ 外部 W25Q64（8MB，fal 分区）                                    │  │
+│  │  firmware_a(1MB)  firmware_bak(1MB)  ota_meta(64KB)            │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="22">2.2 模块职责</h3>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OTA 接收/确认</td>
+<td><code>UserCode/Drivers/ota/ota.c</code>、<code>ota.h</code>、<code>ota_common.h</code></td>
+<td>App 侧接收 TFTP 固件、写 meta、启动确认（防砖确认点）</td>
+</tr>
+<tr>
+<td>控制通道</td>
+<td><code>UserCode/Drivers/ETH/net_comm_task.c</code></td>
+<td>TCP 收 <code>upgrade_start</code>、HMAC 校验、回 <code>upgrade_start_ack</code></td>
+</tr>
+<tr>
+<td>TFTP 服务</td>
+<td>lwIP <code>tftp_server</code>（App 调用 <code>tftp_init</code>）</td>
+<td>监听 UDP/69，接收固件块并回调 <code>ota.c</code></td>
+</tr>
+<tr>
+<td>分区管理</td>
+<td><code>UserCode/Third_Party/Fal/fal_cfg.h</code></td>
+<td>定义 W25Q64 的 fal 分区表</td>
+</tr>
+<tr>
+<td>Boot 烧录</td>
+<td><code>/d/Desktop/boot/Core/Src/main_boot.c</code></td>
+<td>读 meta、校验、备份、烧录内部 Flash、回滚、跳转</td>
+</tr>
+<tr>
+<td>上位机脚本</td>
+<td><code>/d/Desktop/OTA_Upgrade_Tool/ota_tftp_push.py</code></td>
+<td>发 <code>upgrade_start</code>（TCP+HMAC）+ TFTP put 固件</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-tftp">2.3 TFTP 角色定义（关键）</h3>
+<ul>
+<li><strong>设备 = TFTP Server</strong>：监听 UDP/69，仅在升级窗口内由 <code>ota.c</code> 调用 <code>tftp_init()</code> 临时拉起，接收完成后 <code>tftp_cleanup()</code> 关闭。</li>
+<li><strong>上位机/网关 = TFTP Client</strong>：收到 <code>upgrade_start_ack</code> 后，主动将固件 <code>put</code> 到设备的 TFTP Server。</li>
+<li><strong>先指令后文件</strong>：<code>upgrade_start</code>（TCP）先下发，设备确认并启动 TFTP Server 后，上位机才主动推送固件（TFTP）。这是与"网关被动等连接"相反的主动推送模型。</li>
+</ul>
+<h2 id="_4">三、存储分区与状态机</h2>
+<h3 id="31-w25q64-fal">3.1 外部 W25Q64 分区布局（fal）</h3>
+<p>定义于 <code>fal_cfg.h</code>，总容量 8MB。OTA 相关三个分区：</p>
+<table>
+<thead>
+<tr>
+<th>分区名</th>
+<th>偏移（十六进制）</th>
+<th>偏移（十进制）</th>
+<th>大小</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>firmware_a</code></td>
+<td><code>0x30000</code></td>
+<td>192 KB</td>
+<td>1 MB</td>
+<td>暂存本次新固件（升级接收目标）</td>
+</tr>
+<tr>
+<td><code>firmware_bak</code></td>
+<td><code>0x130000</code></td>
+<td>1216 KB</td>
+<td>1 MB</td>
+<td>升级前备份当前 App（回滚源）</td>
+</tr>
+<tr>
+<td><code>ota_meta</code></td>
+<td><code>0x230000</code></td>
+<td>2240 KB</td>
+<td>64 KB</td>
+<td>升级状态机（magic + state + len + crc）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>注：前 192KB 还包含 <code>ef_kvdb1/2/3</code>（各 64KB，FlashDB/KV 数据库），与 OTA 分区互不重叠。</p>
+</blockquote>
+<h3 id="32-flash-bank">3.2 内部 Flash 双 Bank 布局</h3>
+<p>STM32H743ZGT6 内部 Flash 1MB，双 Bank 各 512KB：</p>
+<table>
+<thead>
+<tr>
+<th>区域</th>
+<th>地址</th>
+<th>大小</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bootloader</td>
+<td><code>0x08000000</code></td>
+<td>64 KB</td>
+<td>烧在低端，上电先跑</td>
+</tr>
+<tr>
+<td>App（BANK2）</td>
+<td><code>0x08100000</code></td>
+<td>512 KB</td>
+<td>业务固件运行区（<code>OTA_APP_ADDRESS</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><code>OTA_APP_MAX_SIZE = 0x00080000 = 512KB</code>，即 App 固件上限。</p>
+<h3 id="33-ota">3.3 OTA 状态机</h3>
+<p><code>ota_meta_t</code> 定义于 <code>ota_common.h</code>，App 与 Boot <strong>共用同一份语义</strong>：</p>
+<pre><code class="language-c">typedef struct {
+    uint32_t magic;       /* 0x4C55424F (&quot;LUBO&quot;)，有效升级块标识 */
+    uint32_t state;       /* 状态机当前值 */
+    uint32_t new_len;     /* 新固件字节数（≤512KB） */
+    uint32_t new_crc32;   /* 新固件 CRC32（与 fdb_calc_crc32 一致） */
+    uint32_t reserved[4];
+} ota_meta_t;             /* 共 32 字节 */
+</code></pre>
+<p>状态枚举：</p>
+<table>
+<thead>
+<tr>
+<th>state</th>
+<th>宏</th>
+<th>含义</th>
+<th>写入方</th>
+<th>下一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>OTA_STATE_NONE</code></td>
+<td>无待升级</td>
+<td>初始/确认后</td>
+<td>—</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>OTA_STATE_PENDING</code></td>
+<td><code>firmware_a</code> 就绪，待 Boot 烧录</td>
+<td>App 收尾写</td>
+<td>Boot 烧录</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>OTA_STATE_DONE</code></td>
+<td>Boot 已烧录，待 App 启动确认</td>
+<td>Boot 烧录成功写</td>
+<td>App 确认</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>OTA_STATE_CONFIRMED</code></td>
+<td>App 启动成功，升级完成</td>
+<td>App 确认点写</td>
+<td>闭环</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>OTA_STATE_FAILED</code></td>
+<td>烧录/校验失败</td>
+<td>Boot 写</td>
+<td>回滚</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_5">四、通信协议设计</h2>
+<h3 id="41">4.1 协议层次</h3>
+<pre><code>┌─────────────────────────────────────┐
+│  应用层 (JSON)                       │
+│  upgrade_start / upgrade_start_ack   │
+├─────────────────────────────────────┤
+│  传输层 (TCP, 端口 50010)            │
+│  可靠连接，指令交互 + HMAC 签名      │
+├─────────────────────────────────────┤
+│  文件传输层 (TFTP / UDP, 端口 69)    │
+│  上位机 Client 主动 put 固件到设备   │
+└─────────────────────────────────────┘
+</code></pre>
+<h3 id="42-tcp-50010">4.2 控制通道（TCP，端口 50010）</h3>
+<p>设备作为 TCP 客户端连接上位机的 TCP Server（端口 <code>TCP_SERVER_PORT = 50010</code>，见 <code>net_comm_task.h:40</code>）。</p>
+<h4 id="421-upgrade_start">4.2.1 upgrade_start（上位机 → 设备）</h4>
+<p>上位机下发升级指令，通知设备准备接收固件。设备收到后校验 HMAC、擦 <code>firmware_a</code>、启动 TFTP Server，再回复 <code>upgrade_start_ack</code>。</p>
+<pre><code class="language-json">{
+  &quot;device_id&quot;: &quot;1A2B3C4D5E6F&quot;,
+  &quot;new_crc32&quot;: 305419896,
+  &quot;new_len&quot;: 262144,
+  &quot;seq&quot;: 1001,
+  &quot;ts&quot;: 1746601200,
+  &quot;type&quot;: &quot;upgrade_start&quot;,
+  &quot;sign&quot;: &quot;7F2D91C0&quot;
+}
+</code></pre>
+<p>字段说明：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>device_id</code></td>
+<td>string</td>
+<td>设备 ID（由芯片 UID 派生，12 位 hex）</td>
+</tr>
+<tr>
+<td><code>new_crc32</code></td>
+<td>uint</td>
+<td>新固件 CRC32（标准 CRC-32）</td>
+</tr>
+<tr>
+<td><code>new_len</code></td>
+<td>uint</td>
+<td>新固件字节数（须 0 &lt; len ≤ 512KB）</td>
+</tr>
+<tr>
+<td><code>seq</code></td>
+<td>uint</td>
+<td>命令序号</td>
+</tr>
+<tr>
+<td><code>ts</code></td>
+<td>uint64</td>
+<td>时间戳（十进制串，无前导零）</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>string</td>
+<td>固定 <code>"upgrade_start"</code></td>
+</tr>
+<tr>
+<td><code>sign</code></td>
+<td>string</td>
+<td>HMAC-SHA256 摘要前 4 字节的 8 位大写 hex</td>
+</tr>
+</tbody>
+</table>
+<h4 id="422-upgrade_start_ack">4.2.2 upgrade_start_ack（设备 → 上位机）</h4>
+<p>设备确认后回复（见 <code>net_comm_task.c:2676</code>）：</p>
+<pre><code class="language-json">{
+  &quot;device_id&quot;: &quot;1A2B3C4D5E6F&quot;,
+  &quot;estimated_duration&quot;: 60,
+  &quot;message&quot;: &quot;upgrade_start_accepted&quot;,
+  &quot;seq&quot;: 2001,
+  &quot;status&quot;: 0,
+  &quot;ts&quot;: 1746601201,
+  &quot;type&quot;: &quot;upgrade_start_ack&quot;,
+  &quot;sign&quot;: &quot;3A7F2D11&quot;
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>status</code></td>
+<td>0 = 接受；1 = 拒绝</td>
+</tr>
+<tr>
+<td><code>estimated_duration</code></td>
+<td>预计耗时（秒），含擦 <code>firmware_a</code>（约数秒到二十余秒）</td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td><code>"upgrade_start_accepted"</code> 或 <code>"upgrade_start_rejected"</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-tftpudp69">4.3 文件传输通道（TFTP，UDP/69）</h3>
+<ul>
+<li>协议：RFC1350 TFTP，<code>octet</code> 二进制模式，512 字节/数据块，每块需 ACK。</li>
+<li>方向：上位机 Client 主动 <code>put</code>（<code>WRQ</code>），设备 Server 接收。</li>
+<li>文件名校验：设备 <code>tftp_open_cb</code> 强制校验文件名 == <code>OTA_TFTP_FILENAME</code>（设备端为 <code>"H743_VS_GCC_IDE.bin"</code>，见 <code>ota.h:11</code>），且只接受写请求（<code>write != 0</code>），否则拒绝——防止误写。</li>
+<li>端口说明：69 是握手端口，实际数据在临时端口间传输；抓包需同时关注设备临时端口。</li>
+</ul>
+<h3 id="44-status1">4.4 拒绝原因（status=1 场景）</h3>
+<table>
+<thead>
+<tr>
+<th>返回码（内部）</th>
+<th>含义</th>
+<th>对应 ack</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>-1</td>
+<td>正在升级中（<code>g_ota_state != IDLE</code>），拒绝重入</td>
+<td>rejected</td>
+</tr>
+<tr>
+<td>-2</td>
+<td>长度非法（<code>new_len==0</code> 或 &gt; 512KB）</td>
+<td>rejected</td>
+</tr>
+<tr>
+<td>-3</td>
+<td>CRC 非法（<code>new_crc32==0</code>）</td>
+<td>rejected</td>
+</tr>
+<tr>
+<td>-4</td>
+<td>分区缺失（<code>firmware_a</code>/<code>ota_meta</code> 未找到）</td>
+<td>rejected</td>
+</tr>
+<tr>
+<td>-5</td>
+<td><code>tftp_init</code> 启动失败</td>
+<td>rejected</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_6">五、校验与安全机制</h2>
+<h3 id="51-hmac-sha256">5.1 指令签名 HMAC-SHA256</h3>
+<p>目的：防止伪造/重放的升级命令。设备端实现见 <code>net_comm_task.c:2258-2271</code>。</p>
+<ul>
+<li><strong>签名源串（严格字典序）</strong>：
+  <code>{"device_id":"%s","new_crc32":%lu,"new_len":%lu,"seq":%lu,"ts":%s,"type":"upgrade_start"}</code></li>
+<li><strong>算法</strong>：HMAC-SHA256，密钥 <code>HMAC_KEY</code>（默认 <code>"0123456789abcdef0123456789abcdef"</code>，见 <code>project_config.h</code>）。</li>
+<li><strong>签名值</strong>：取摘要前 4 字节，转 8 位大写 hex 字符串，作为 <code>sign</code> 字段。</li>
+<li>设备收到后按同一算法本地计算并比对，不一致则 <code>goto exit</code> 丢弃该命令。</li>
+</ul>
+<h3 id="52-crc32">5.2 固件完整性 CRC32</h3>
+<p>目的：确保固件在传输与烧录过程中未被破坏。</p>
+<ul>
+<li><strong>算法</strong>：<code>fdb_calc_crc32</code> = 标准 CRC-32（<code>init=0xFFFFFFFF</code>，末异或 <code>0xFFFFFFFF</code>），与 <code>zlib.crc32</code> 一致。</li>
+<li><strong>App 端（增量）</strong>：每收到一块即 <code>g_ota_crc = fdb_calc_crc32(g_ota_crc, data, len)</code>（<code>ota.c:91</code>），收满后比对 <code>g_ota_crc == g_ota_exp_crc</code>。</li>
+<li><strong>Boot 端（全量）</strong>：<code>calc_spi_crc(OTA_FW_A_OFFSET, new_len)</code> 校验外部 Flash；烧录后再 <code>calc_internal_crc(new_len)</code> 校验内部 Flash。两关都通过才置 <code>DONE</code>。</li>
+</ul>
+<h3 id="53">5.3 元数据与边界保护</h3>
+<ul>
+<li><strong>magic 校验</strong>：<code>ota_meta.magic == 0x4C55424F ("LUBO")</code> 才认定为有效升级块；否则 Boot 静默跳过 OTA。</li>
+<li><strong>接收越界保护</strong>：<code>ota_feed_chunk</code> 中 <code>if (g_ota_off + len &gt; g_ota_exp_len) return -1</code>，防止畸形/超长数据破坏分区（<code>ota.c:67</code>）。</li>
+<li><strong>烧录容量保护</strong>：<code>burn_spi_to_internal</code> 中 <code>if (len &gt; APP_FLASH_SIZE) return -1</code>，绝不越界访问不存在的内部 Flash 地址（<code>main_boot.c:315</code>）。</li>
+<li><strong>文件名强校验</strong>：TFTP <code>open</code> 回调限定文件名与写模式，防止误写。</li>
+</ul>
+<h2 id="_7">六、升级流程设计</h2>
+<h3 id="61-app-otac">6.1 App 侧接收流程（ota.c）</h3>
+<ol>
+<li>上位机经 TCP 下发 <code>upgrade_start</code>（<code>new_len</code>, <code>new_crc32</code>）。</li>
+<li>设备 HMAC 校验通过 → <code>ota_handle_upgrade_start()</code>：
+   - 拒绝重入（<code>g_ota_state != IDLE</code> 直接返回）；
+   - 校验参数（长度 &gt;0 且 ≤512KB、CRC≠0）；
+   - 擦除 <code>firmware_a</code> 全分区（1MB）；
+   - 记录期望 <code>len/crc</code>，置 <code>OTA_RX_ACTIVE</code>，调 <code>tftp_init()</code> 启动 TFTP Server。</li>
+<li>上位机 <code>put</code> 固件 → 设备 <code>tftp_write_cb</code> 每收到一块 → <code>ota_feed_chunk</code> 写 SPI + 增量 CRC。</li>
+<li>传输结束 <code>tftp_close_cb → ota_on_complete</code>：
+   - <code>off==exp_len 且 crc==exp_crc</code> → 写 <code>ota_meta(PENDING)</code> → <code>HAL_NVIC_SystemReset()</code> 软复位；
+   - 否则 <code>ota_reset_session()</code>（停 TFTP、回 <code>IDLE</code>，允许重试）。</li>
+</ol>
+<h3 id="62-boot-main_bootc">6.2 Boot 侧烧录流程（main_boot.c）</h3>
+<p>上电 <code>main()</code>：最小初始化（HAL/时钟/SPI1）→ <code>HAL_Delay(30)</code> 等 W25Q64 上电稳定 → 带重试（5 次）读 <code>ota_meta</code> → 按 <code>state</code> 分支：</p>
+<pre><code>state == PENDING → do_update(&amp;meta)
+state == DONE    → 上次烧完但 App 未确认（起不来）→ 回滚 firmware_bak
+state == CONFIRMED → 清为 NONE
+NONE / FAILED    → 不动作
+</code></pre>
+<p><code>do_update()</code> 核心顺序：</p>
+<ol>
+<li><code>calc_spi_crc(firmware_a)</code> 校验外部新固件完整；不符 → 写 <code>FAILED</code> 返回。</li>
+<li><code>backup_app_to_bak()</code> 把当前内部 Flash App 全量（512KB）备份到 <code>firmware_bak</code>。</li>
+<li><code>burn_spi_to_internal(firmware_a)</code>：擦内部 BANK2 + 以 32 字节 flash word 为单位编程烧录。</li>
+<li><code>calc_internal_crc()</code> 再校验内部 Flash；不符 → 用 <code>firmware_bak</code> 回滚；相符 → 写 <code>DONE</code>。</li>
+<li><code>write_meta()</code> 落盘状态。</li>
+<li><code>app_valid()</code> 校验栈顶/复位向量合法 → <code>JumpToApp()</code>（关中断、设 MSP、改 <code>VTOR=0x08100000</code>、跳复位向量）。</li>
+</ol>
+<blockquote>
+<p>烧录全程每 32 字节 <code>boot_kick_iwdg()</code> 喂独立看门狗，避免长操作触发看门狗复位。</p>
+</blockquote>
+<h3 id="63">6.3 防砖确认与回滚</h3>
+<ul>
+<li><strong>先备份再烧录</strong>：<code>do_update</code> 先把可运行的旧 App 拷到 <code>firmware_bak</code>，再动内部 Flash。任何烧录/校验失败都用 <code>firmware_bak</code> 还原，设备不会变砖。</li>
+<li><strong>确认点机制（DONE→CONFIRMED）</strong>：Boot 烧完只置 <code>DONE</code> 即跳 App；只有 App <strong>真的跑起来</strong>并调用 <code>ota_app_confirm()</code> 才置 <code>CONFIRMED</code>（<code>ota.c:282</code>）。若新固件有 bug 起不来，<code>ota_meta</code> 停留在 <code>DONE</code>，下次上电 Boot 判定"上次没确认" → 回滚 <code>firmware_bak</code>。</li>
+<li><strong>启动确认实现</strong>：<code>freertos.c</code> 在任务启动后调用 <code>ota_app_confirm()</code>；其内部用 <code>static s_done</code> 保证每上电只确认一次，仅当 <code>meta.state == DONE</code> 时改写为 <code>CONFIRMED</code>。</li>
+</ul>
+<h3 id="64">6.4 完整时序</h3>
+<pre><code>上位机                        设备 App                        设备 Boot
+  |                              |                               |
+  |-- TCP upgrade_start -------&gt;|                               |
+  |                              | HMAC 校验 + 擦 firmware_a    |
+  |&lt;-- upgrade_start_ack -------|                               |
+  |                              | tftp_init() (UDP/69 监听)    |
+  |-- TFTP WRQ -----------------&gt;|                               |
+  |&lt;-- ACK(block0) -------------|                               |
+  |-- DATA block1 -------------&gt;| tftp_write_cb → 写 SPI+CRC   |
+  |&lt;-- ACK(block1) -------------|                               |
+  | ... 逐块 ...                |                               |
+  |-- 末块(&lt;512) --------------&gt;|                               |
+  |&lt;-- 最终 ACK ----------------|                               |
+  |                              | 收满校验 → 写 meta(PENDING)  |
+  |                              | HAL_NVIC_SystemReset()       |
+  |                              |======== 软复位 ============&gt;|
+  |                              |                               | 读 meta(retry)
+  |                              |                               | PENDING → do_update
+  |                              |                               | 校验CRC→备份→烧录→校验
+  |                              |                               | 置 DONE → JumpToApp
+  |                              |&lt;======== 跳转到 App =========|
+  |                              | ota_app_confirm(): DONE→CONFIRMED
+  |                              | 新固件运行，升级完成          |
+</code></pre>
+<h2 id="_8">七、关键参数与约束</h2>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TFTP 文件名</td>
+<td><code>H743_VS_GCC_IDE.bin</code></td>
+<td>设备端 <code>OTA_TFTP_FILENAME</code>（<code>ota.h:11</code>）</td>
+</tr>
+<tr>
+<td>TFTP 端口</td>
+<td>UDP 69</td>
+<td>握手端口，数据走临时端口</td>
+</tr>
+<tr>
+<td>TCP 控制端口</td>
+<td>50010</td>
+<td><code>TCP_SERVER_PORT</code>（<code>net_comm_task.h:40</code>）</td>
+</tr>
+<tr>
+<td>App 固件上限</td>
+<td>512 KB</td>
+<td><code>OTA_APP_MAX_SIZE</code></td>
+</tr>
+<tr>
+<td>CRC32</td>
+<td>标准 CRC-32</td>
+<td>init/末异或 0xFFFFFFFF，同 <code>zlib.crc32</code></td>
+</tr>
+<tr>
+<td>HMAC</td>
+<td>SHA256 取前 4 字节</td>
+<td>8 位大写 hex 作为 <code>sign</code></td>
+</tr>
+<tr>
+<td>HMAC 密钥</td>
+<td><code>0123456789abcdef0123456789abcdef</code></td>
+<td><code>project_config.h</code>，改需同步上位机</td>
+</tr>
+<tr>
+<td>Boot 等待</td>
+<td>30ms + meta 读重试 5 次</td>
+<td>等 W25Q64 上电稳定（<code>main_boot.c</code>）</td>
+</tr>
+<tr>
+<td>看门狗</td>
+<td>每 32 字节喂一次</td>
+<td>防烧录期间 IWDG 复位</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_9">八、调试与日志</h2>
+<h3 id="81-app">8.1 App 侧</h3>
+<ul>
+<li>日志前缀 <code>LOG_OTA</code>，受 <code>OTA_DEBUG</code> 开关控制。</li>
+<li>关键节点：升级接收开始、每块越界、收尾成功/中止、写 meta、软复位、启动确认。</li>
+<li>启动即打印 <code>ota_meta</code> 当前状态：<code>state=</code>（0=NONE/1=PENDING/2=DONE/3=CONFIRMED/4=FAILED），可直接判断上次升级走到哪一步。</li>
+</ul>
+<h3 id="82-boot">8.2 Boot 侧</h3>
+<ul>
+<li>开启 <code>BOOT_DEBUG_UART</code> 后打印 <code>[BOOT] ...</code> 全流程：</li>
+<li><code>magic/state/new_len/new_crc</code> 读取与重试；</li>
+<li><code>do_update</code> 的 CRC 比对、备份进度；</li>
+<li>烧录进度（每 64KB 打印一次）；</li>
+<li><code>verify</code> 结果、<code>meta</code> 最终状态。</li>
+<li>定位"升级卡在哪一步"的主要抓手。</li>
+</ul>
+<h3 id="83">8.3 状态速查</h3>
+<table>
+<thead>
+<tr>
+<th><code>ota_meta.state</code></th>
+<th>含义</th>
+<th>处理建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>无待升级</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>1</td>
+<td>已接收待烧录</td>
+<td>重启后 Boot 应自动烧录</td>
+</tr>
+<tr>
+<td>2</td>
+<td>已烧录未确认</td>
+<td>若反复出现 → 新固件起不来，将自动回滚</td>
+</tr>
+<tr>
+<td>3</td>
+<td>已确认</td>
+<td>升级成功闭环</td>
+</tr>
+<tr>
+<td>4</td>
+<td>失败</td>
+<td>检查 CRC/固件完整性，重新发起升级</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

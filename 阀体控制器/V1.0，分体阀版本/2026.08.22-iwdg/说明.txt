@@ -1,0 +1,5 @@
+修改看门狗优先级
+修改‎net_comm_task.c文件内的
+static void udp_send_device_online(struct udp_pcb *upcb, uint16_t reason)
+static err_t tcp_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
+修改‎sysmem.c文件

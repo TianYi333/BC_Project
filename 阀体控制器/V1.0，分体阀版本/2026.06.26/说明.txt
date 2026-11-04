@@ -1,0 +1,4 @@
+增加TCP配网重启
+增加UDP重连
+增加#define MB_SER_PDU_SIZE_MAX 512
+增加NTP网络从配置功能
