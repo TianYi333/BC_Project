@@ -1,0 +1,76 @@
+V1.1.1版说明.txt（PUMP-CTRL-V1.0 油泵控制器）
+
+当前版本号：1.1.1（宏 DEVICE_FW_VER = "1.1.1"，工程路径 d:\Desktop\temporary\油泵控制器\Oil_Pump_Control）
+上一版本号：1.1.0
+日期：2026-11-20
+型号标识：DEVICE_MODEL = "PUMP-CTRL-V1.0"
+说明：本文件描述 1.1.1 相对 1.1.0 的变更。本版仅一项协议变更：TCP 心跳报文
+      （type=heartbeat）新增 "uptime" 字段，上报设备自开机以来的运行时间（秒级），
+      与注油主工程 2.2.6i 的同名改动同步。其余功能未动。
+
+Current version: 1.1.1 | Previous version: 1.1.0 | Date: 2026-11-20
+Model: PUMP-CTRL-V1.0. Single protocol change: the TCP heartbeat message now carries an
+integer-seconds "uptime" field, synchronized with the oiling main project's 2.2.6i.
+
+============================================================
+0. 版本号 / Version number
+============================================================
+版本号：1.1.0 -> 1.1.1
+文件：UserCode/Logic/project_config.h（DEVICE_FW_VER 宏）。该宏为固件版本唯一来源，
+上位机上报、OLED 关于页、OTA 旧版本记录同步生效。
+
+============================================================
+一、新增：心跳报文 uptime 字段（设备运行时间）
+============================================================
+1. 字段语义
+   - 键名 "uptime"，整型，单位秒（截断取整，误差 ≤1s）
+   - 取值 HAL_GetTick()/1000（TIM7 1ms 时基），开机为 0 点，约 49.7 天回绕
+2. 修改后心跳报文示例（device_status 为油泵协议 8 字段）：
+   {"type":"heartbeat","device_id":"...","device_status":{"liquid_level_pct":...,
+    "oil_temp_c":...,"pressure_mpa":...,"sensor_status":...,"sys_fault_bit":...,
+    "sys_start":...,"sys_warning":...,"valve_state":...},"seq":42,
+    "ts":1795133180,"uptime":86400,"sign":"A1B2C3D4"}
+3. 代码改动（UserCode/Drivers/ETH/net_comm_task.c / .h）
+   - HeartBeatParam_t 新增成员 uint32_t uptime_sec（结构体末尾追加，不影响既有字段偏移）
+   - FillHeartBeatData()：memset 后新增 hb_param->uptime_sec = HAL_GetTick() / 1000U;
+   - tcp_send_heartbeat() 签名临时对象：在 "type" 键之后追加 "uptime" 键
+     （验签原文按键名字典序：device_id → device_status → seq → ts → type → uptime）
+   - tcp_send_heartbeat() 最终报文：在 "ts" 之后、"sign" 之前插入 "uptime"
+4. 协议契约影响（重要）
+   - 心跳 HMAC-SHA256 验签原文新增 "uptime":N，网关侧签名计算必须同步纳入该键，
+     否则升级后所有心跳 sign check failed。需与网关同版本发布。
+
+Heartbeat gains integer-seconds "uptime" (= HAL_GetTick()/1000, zero at boot, wraps
+after ~49.7 days). HeartBeatParam_t appends uptime_sec at struct end (no offset change
+for existing fields); FillHeartBeatData samples it; tcp_send_heartbeat inserts
+"uptime" after "type" in the sorted signature string and between "ts" and "sign" in
+the message. The gateway MUST include "uptime" in heartbeat signature computation.
+
+============================================================
+二、涉及文件汇总 / Modified files
+============================================================
+  UserCode/Logic/project_config.h            （版本号 1.1.0 -> 1.1.1）
+  UserCode/Drivers/ETH/net_comm_task.h       （HeartBeatParam_t 新增 uptime_sec）
+  UserCode/Drivers/ETH/net_comm_task.c       （FillHeartBeatData + tcp_send_heartbeat 两处）
+  原文件备份：_backup/net_comm_task.c.bak_hbuptime_20261120
+              _backup/net_comm_task.h.bak_hbuptime_20261120
+              _backup/project_config.h.bak_hbuptime_20261120
+
+============================================================
+三、校验 / Verification
+============================================================
+- 构建说明：原 build/Debug 缓存创建于工程移动前（d:/Desktop/Oil_Pump_Control），
+  已清除旧缓存并重新配置（CMake preset Debug + Ninja），全新全量编译
+- 全量构建：编译链接通过，FLASH 364636 B（69.55%），RAM_D1 62.11%
+- 产物核验：bin 内含 "1.1.1"；心跳 uptime 键字符串已入镜像
+- 中文路径已知问题：ninja 末尾 objcopy 步骤在中文目录下报
+  "No such file or directory"（改动前即存在），elf/map 正常生成，hex/bin 已由
+  手工执行 arm-none-eabi-objcopy 补齐，与 elf 内容一致
+- 建议：升级前与网关做一次心跳联合验签实测
+
+============================================================
+四、同步关系 / Cross-project sync
+============================================================
+本次 uptime 心跳改动同步应用于：主工程 2.2.6i、V1.0分体阀 1.1.5i、
+V2.0低速内部晶振 2.1.5i、V2.0低速外部晶振 2.1.5e、本工程 1.1.1、
+终端传感器集中器 1.1.3。SensorConcentrator_Test 与 V2.2.6i，多次少供版 未修改。

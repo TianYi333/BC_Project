@@ -1,0 +1,109 @@
+V2.2.6i版说明.txt（LUB-CTRL-V2.0i 主工程 / 主线固件）
+
+当前版本号：2.2.6i（宏 DEVICE_FW_VER = "2.2.6i"，工程路径 d:\Desktop\H743_VS_GCC_IDE）
+上一版本号：2.2.5i
+日期：2026-11-19
+型号标识：DEVICE_MODEL = "LUB-CTRL-V2.0i"（低速内部晶振 LSI，i 后缀；e 后缀为 LSE 外部晶振版）
+说明：本文件描述 2.2.6i 相对 2.2.5i 的全部变更。2.2.6i 为小版本，仅一项协议变更：
+      TCP 心跳报文（type=heartbeat）新增 "uptime" 字段，上报设备自开机以来的运行时间（秒级）。
+      OLED 双语界面等 2.2.5i 功能全部保持不变。衍生版本（temporary 下 4 个）未同步本变更。
+
+Current version: 2.2.6i (DEVICE_FW_VER = "2.2.6i")
+Previous version: 2.2.5i
+Date: 2026-11-19
+Model: DEVICE_MODEL = "LUB-CTRL-V2.0i" (internal LSI crystal; suffix "e" = external LSE)
+This file lists all changes of 2.2.6i versus 2.2.5i. It is a small release with a single
+protocol change: the TCP heartbeat message now carries an "uptime" field reporting the
+device's seconds-since-boot. All 2.2.5i features (bilingual OLED UI etc.) are unchanged.
+The 4 derivative projects under temporary/ are NOT updated with this change.
+
+============================================================
+0. 版本号 / Version number
+============================================================
+版本号：2.2.5i -> 2.2.6i
+文件：UserCode/Logic/project_config.h（第 72 行）
+  #define DEVICE_FW_VER  "2.2.5i"  ->  "2.2.6i"
+DEVICE_FW_VER 是固件版本号的唯一来源：上位机握手/心跳、以太网 JSON 上报、OLED 关于设备页、
+OTA 旧版本号记录均引用该宏，改这一处即全局生效。注意 device_online 报文中的
+firmware_ver 字段也会随之变为 2.2.6i，供网关识别固件版本。
+
+Version: 2.2.5i -> 2.2.6i
+File: UserCode/Logic/project_config.h (line 72). DEVICE_FW_VER is the single source of truth:
+host handshake/heartbeat, Ethernet JSON reports, the OLED About page and the OTA
+old-version record all reference this macro, and the firmware_ver field in the UDP
+device_online message now reads 2.2.6i as well.
+
+============================================================
+一、新增：心跳报文 uptime 字段（设备运行时间）
+============================================================
+1. 字段语义
+   - 键名 "uptime"，整型，单位秒（秒级截断，误差 ≤1s）
+   - 取值 HAL_GetTick()/1000（TIM7 1ms 时基），开机为 0 点
+   - 32 位毫秒计数约 49.7 天回绕，连续运行超期后从 0 重新计
+   - 与 device_reboot_result 报文中的 uptime 同一采样口径，网关可共用解析逻辑
+2. 修改后心跳报文示例：
+   {"type":"heartbeat","device_id":"...","device_status":{...},"run_status":1,
+    "seq":42,"ts":1795078644,"uptime":86400,"sign":"A1B2C3D4"}
+3. 代码改动（UserCode/Drivers/ETH/net_comm_task.c / .h，共三处 + 结构体一处）
+   - HeartBeatParam_t 新增成员 uint32_t uptime_sec
+   - FillHeartBeatData()：hb_param->uptime_sec = HAL_GetTick() / 1000U;
+   - tcp_send_heartbeat() 签名临时对象：在 "type" 键之后追加 "uptime" 键
+     （验签原文按键名字典序，t < u，uptime 必排 type 之后，与 device_reboot_result
+      的签名顺序 …ts → type → uptime 同构）
+   - tcp_send_heartbeat() 最终报文：在 "ts" 之后、"sign" 之前插入 "uptime"
+4. 协议契约影响（重要）
+   - 心跳 HMAC-SHA256 验签原文新增了 "uptime":N。网关侧签名计算必须同步纳入该键，
+     否则设备升级后所有心跳将报 sign check failed。需与网关同版本发布。
+   - 旧版上位机若按"接收报文键全集排序验签"实现则天然兼容；若按固定字段模板拼串，
+     则需更新模板。
+5. 未做（可选后续）：如需连续运行超 49.7 天严格单调的 uptime，可在固件追加
+   tick 回绕检测 + 高位累加的 64 位软件扩展（约 10 行），本版未实施。
+
+The heartbeat message gains an integer-seconds "uptime" field (= HAL_GetTick()/1000,
+zero at boot, wraps after ~49.7 days, same sampling basis as the uptime in
+device_reboot_result). The struct HeartBeatParam_t adds uint32_t uptime_sec,
+FillHeartBeatData() samples it, and tcp_send_heartbeat() inserts "uptime" both into the
+signature temp object right after "type" (lexicographic order, t < u, mirroring
+device_reboot_result) and into the final message between "ts" and "sign".
+IMPORTANT: the gateway must include "uptime" when computing/verifying the heartbeat
+HMAC, otherwise every heartbeat will fail the sign check after the upgrade; ship the
+firmware and the gateway together. A 64-bit monotonic uptime extension for the
+49.7-day wrap is intentionally not implemented in this release.
+
+============================================================
+二、涉及文件汇总 / Modified files
+============================================================
+  UserCode/Logic/project_config.h              （版本号 2.2.5i -> 2.2.6i）
+  UserCode/Drivers/ETH/net_comm_task.h         （HeartBeatParam_t 新增 uptime_sec）
+  UserCode/Drivers/ETH/net_comm_task.c         （FillHeartBeatData 采样 +
+                                                tcp_send_heartbeat 签名/报文两处插入）
+  原文件备份：_backup/net_comm_task.c.bak_hbuptime_20261119
+              _backup/net_comm_task.h.bak_hbuptime_20261119
+  工程内另存有过程记录：修改记录_心跳uptime_20261119.md
+
+============================================================
+三、校验 / Verification
+============================================================
+- 全量构建：cmake --build build/Debug（arm-none-eabi-gcc + ninja）通过，
+  链接生成 elf/hex/bin/map；FLASH 74.98%，RAM_D1 62.78%，无警告新增
+- 产物一致性：版本号更新后产物重新生成（2026-11-19 17:10），已核验 bin 镜像内含
+  字符串 "2.2.6i"、不含 "2.2.5i"；心跳 uptime 改动包含在同一产物中
+- 数据流确认：心跳唯一调用路径 tcp_client_task -> FillHeartBeatData ->
+  tcp_send_heartbeat，发送前 uptime 必被填充，无遗漏分支
+- 未做：与网关的联合验签实测与实机心跳抓取，建议升级前在测试环境先行验证
+  （尤其确认网关签名模板已加入 uptime）
+
+Full cmake/ninja build passes; the elf/hex/bin regenerated after the version bump was
+verified to contain the string "2.2.6i" (and no "2.2.5i") together with the heartbeat
+change. The single heartbeat call path guarantees uptime is always filled before send.
+An on-device capture plus a joint signature test with the gateway is still recommended
+before rolling out.
+
+============================================================
+四、衍生版本状态 / Derivative projects
+============================================================
+temporary\V1.0，分体阀版本      1.1.4i   未同步本版本
+temporary\V2.0版，低速内部晶振  2.1.4i   未同步本版本
+temporary\V2.0版，低速外部晶振  2.1.4e   未同步本版本
+temporary\V2.2.3i，多次少供版   2.2.4i   未同步本版本（含心跳 uptime 变更）
+如需将 uptime 字段同步至任一衍生版本，请另行安排（改动即第一节所列三处）。

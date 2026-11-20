@@ -1,0 +1,172 @@
+﻿中英文版版本描述.txt（LUB-CTRL-V2.0i 主工程 / 主线固件）
+
+当前版本号：2.2.5i（宏 DEVICE_FW_VER = "2.2.5i"，工程路径 d:\Desktop\H743_VS_GCC_IDE）
+上一版本号：2.2.4i
+日期：2026-11-19
+型号标识：DEVICE_MODEL = "LUB-CTRL-V2.0i"（低速内部晶振 LSI，i 后缀；e 后缀为 LSE 外部晶振版）
+说明：本文件描述 2.2.5i 相对 2.2.4i 的全部变更。2.2.5i 的核心是 OLED 界面的
+      中英文双语切换，并附带 OLED 全量汉化收尾与英文界面对汉化前原厂界面的还原。
+      衍生版本（temporary 下 4 个）未同步本版本的双语功能。
+
+Current version: 2.2.5i (DEVICE_FW_VER = "2.2.5i")
+Previous version: 2.2.4i
+Date: 2026-11-19
+Model: DEVICE_MODEL = "LUB-CTRL-V2.0i" (internal LSI crystal; suffix "e" = external LSE)
+This file lists all changes of 2.2.5i versus 2.2.4i. The main feature of 2.2.5i is the
+bilingual (Chinese/English) OLED UI switch, together with the completion of the full
+OLED Chinese localization and the restoration of the English UI to the pre-localization
+factory look. The 4 derivative projects under temporary/ are NOT updated with this feature.
+
+============================================================
+0. 版本号 / Version number
+============================================================
+版本号：2.2.4i -> 2.2.5i
+文件：UserCode/Logic/project_config.h（第 72 行）
+  #define DEVICE_FW_VER  "2.2.4i"  ->  "2.2.5i"
+DEVICE_MODEL（LUB-CTRL-V2.0i）保持不变；i/e 后缀由型号宏体现，本次不涉及。
+DEVICE_FW_VER 是固件版本号的唯一来源：上位机握手/心跳、以太网 JSON 上报、OLED 关于设备页、
+OTA 旧版本号记录均引用该宏，因此本次改这一处即可全局生效。
+
+Version: 2.2.4i -> 2.2.5i
+File: UserCode/Logic/project_config.h (line 72)
+  #define DEVICE_FW_VER  "2.2.4i"  ->  "2.2.5i"
+DEVICE_MODEL (LUB-CTRL-V2.0i) is unchanged. DEVICE_FW_VER is the single source of truth for
+the firmware version: host handshake/heartbeat, Ethernet JSON reports, the OLED About page
+and the OTA old-version record all reference this macro, so this single edit takes effect
+globally.
+
+============================================================
+一、新增：OLED 中英文双语切换
+============================================================
+1. 新增 UserCode/Logic/oled_lang.h
+   - g_oled_lang：当前语言标志（OLED_LANG_CN=0 / OLED_LANG_EN=1）
+   - OLANG(cn, en)：就地双语宏，在每个文案调用点给出中英两套字符串
+   - oled_lang_init() / oled_lang_toggle()：语言读取与切换
+2. 语言持久化（不进 main_config，不占 Modbus 寄存器）
+   - FlashDB 独立 key "oled_lang"，值 "0"=中文 / "1"=英文
+   - 位置：sysdb 数据库 -> fal 分区 ef_kvdb1 -> W25Q64 偏移 0x00000，64KB
+   - syncif.c / syncif.h 新增 sysdb_get_u8() / sysdb_set_u8()
+   - 切换语言不会改写 main_config，Modbus 侧完全不受影响
+3. 切换入口
+   - 系统设置二级菜单新增「语言/Language」项（7 项 -> 8 项），短按切换、立即刷新
+   - 一级菜单结构保持 6 项不变
+   - 菜单项名称用中/英两张表，由 oled_lang_apply_menu() 在运行时改 item_name 指针
+4. 语言感知绘制原语（oled_page.c）
+   - draw_lang_text(u8g2, f_cn, f_en, text, x, cn_y, en_y)：中文走 cn_font_* 点阵 +
+     u8g2_DrawUTF8，英文走原厂 u8g2 字体 + u8g2_DrawStr，中英各一套基线
+   - lang_text_width(u8g2, f_cn, f_en, text)：按当前语言测宽
+5. 英文界面文案全部复用汉化前的原厂文案（取自 _backup/oled_page.c.bak_speed2state_
+   20261118_164528），未自行翻译：
+     一级菜单 Home Page / System Settings / Test Running / Unit Test / About Device / Reboot
+     二级菜单 Serial Port / P Model Init / Q Model Init / P Model Speed / Q Model Speed /
+              Restore Factory / Language / Back
+   运行消息（running_logic.c 37 处 show_oled_msg）同样取用原厂英文：
+     motor init ... / run task %d / waiting sen ... / init motor error ... / p ready to %d /
+     init sen error ... / task %u-%lu / motor error ... / P motor error ... / err: sen ... /
+     P zero not ready ! / P running failure . / P motor release protect . / Q zero not ready ! /
+     Q motor release protect . / Q running failure . / waiting sen to %d / sen %d timeout
+
+1. New file UserCode/Logic/oled_lang.h: g_oled_lang flag (OLED_LANG_CN / OLED_LANG_EN),
+   the OLANG(cn, en) macro, and oled_lang_init() / oled_lang_toggle().
+2. Language persistence without touching main_config or the Modbus map: dedicated FlashDB
+   key "oled_lang" ("0"=CN, "1"=EN) inside the sysdb database / ef_kvdb1 partition
+   (W25Q64 offset 0x00000, 64KB), read and written through the new sysdb_get_u8() /
+   sysdb_set_u8() in syncif.c / syncif.h.
+3. Switch entry: a new "语言/Language" item in the System Settings sub-menu (7 -> 8 items),
+   short press toggles and refreshes immediately. The main menu keeps its 6 items. Menu
+   labels are held in two CN/EN tables and swapped by oled_lang_apply_menu() at runtime.
+4. Language-aware drawing primitives in oled_page.c: draw_lang_text() and lang_text_width(),
+   with separate baselines for Chinese and English.
+5. All English strings reuse the original pre-localization wording taken from the backup
+   baseline; nothing was re-translated. Menu labels and the 37 runtime messages in
+   running_logic.c follow the same rule.
+
+============================================================
+二、英文界面还原为汉化前原厂样式
+============================================================
+1. 字体（汉化前基线原厂字体）
+   标题/品牌 = u8g2_font_ncenB14_tr，正文 = u8g2_font_9x15_tf，
+   编辑页数值与速度行 = u8g2_font_10x20_tf，重启文案 = u8g2_font_ncenB18_tr，
+   底部状态栏 = u8g2_font_6x10_tf；中文仍用 cn_font_12/16/16_bold + DrawUTF8
+2. 基线坐标（中英各一套，共 45 个绘制点）
+   底部状态栏 H-3 -> H-6；关于页底部 H-6 -> H-12；各页标题 19/20 -> 16；
+   主页温湿度 103 -> 100；编辑页说明 94 -> 82；恢复出厂正文 62 -> 60；重启页 75 -> 70
+3. 排版结构
+   主页温湿度：英文改回原厂整行 "T: 25.30C" / "H: 55.20%"（x=20/148, y=100）
+   重启页：英文改回 ncenB18_tr 左对齐 x=50, y=70（中文仍居中 y=75 并补三点省略号）
+   菜单页：标题 ncenB14_tr@16、菜单项 9x15_tf@menu_y+8、状态栏 6x10_tf@H-6
+4. 英文文案细节
+   恢复出厂英文标题用原厂全大写 RESTORE FACTORY
+   系统设置页英文状态栏用操作提示语 Long press to return（不用原厂的页标题）
+5. 刻意未照搬原厂的两处（因功能已变更）
+   速度页：英文只做文案翻译（Max Speed / Target Speed / RPM），中英同结构
+           （单行合并、'>'/'*' 前缀、行距 32px），不还原原厂的"标签+值"两段式排版
+   速度页第二项英文用 Target 而非原厂基线版的 Base（现版功能是目标速度）
+
+The English UI was restored to the pre-localization factory look: original fonts,
+original baselines (45 draw points, Chinese and English now have their own y),
+and original layout structure for the home temperature/humidity line, the reboot text
+and the menu pages. Two items are intentionally NOT copied from the factory version
+because the functionality has changed: the motor-speed page keeps the Chinese single-line
+layout (only the wording is translated), and its second item is named "Target" instead
+of the factory "Base".
+
+============================================================
+三、字库补充：新增「语」「言」
+============================================================
+- 现象：系统设置菜单「语言」项在中文模式下显示空白
+- 根因：点阵字库中根本没有「语」(U+8BED)、「言」(U+8A00) 两个字形，U8G2 查不到即画空白
+- 修改：UserCode/Drivers/Oled/cn_font_gen.py 字符表补入 "语"、"言" 后重新生成字库
+- 结果：中文字符 179 -> 181；cn_font_12/16/24 分别 +75 / +86 / +125 字节；
+  cn_font_16_bold 不变；ASCII 95 个字形逐字节比对完全一致（点号等既有修复未受影响）
+- 校验：脚本内置的逐像素解码自校验通过，另模拟 U8G2 查找路径确认三个字体均可命中
+
+Blank "语言" menu entry in Chinese mode was caused by the two missing glyphs "语" and "言"
+in the bitmap font. They were added to cn_font_gen.py and the font was regenerated
+(181 CJK characters now). The ASCII segment is bit-identical to before.
+
+============================================================
+四、串口设置页说明行微调
+============================================================
+- 「设置后重启生效」下移 12px（y=82 -> y=94，框底 108、状态栏 110，仍有余量）
+- 文案加全角括号：「（设置后重启生效）」
+- 该调整同时同步到衍生版 V2.2.3i，多次少供版（2.2.4i）
+
+The "设置后重启生效" note on the Serial Port page was moved down 12 px and wrapped in
+full-width parentheses. The same tweak was applied to the V2.2.3i derivative project.
+
+============================================================
+五、涉及文件汇总 / Modified files
+============================================================
+  UserCode/Logic/oled_lang.h            （新增：中英文语言机制）
+  UserCode/Logic/oled_page.c            （双语框架 + 全量文案 + 英文还原原厂 + 速度页行位置）
+  UserCode/Logic/oled_page.h            （引用 oled_lang.h；MENU_TITLE/MENU_STATUS/DEVICE_LOGO 双语）
+  UserCode/Logic/running_logic.c        （37 处 show_oled_msg 文案双语）
+  UserCode/Logic/oled_task.c            （启动流程调用 oled_lang_init()）
+  UserCode/Logic/syncif.c / syncif.h    （新增 sysdb_get_u8 / sysdb_set_u8）
+  UserCode/Logic/project_config.h       （版本号 2.2.4i -> 2.2.5i）
+  UserCode/Drivers/Oled/cn_font_gen.py  （字符表补「语」「言」）
+  UserCode/Drivers/Oled/cn_fonts.c/.h   （重新生成，181 汉字 + ASCII）
+
+============================================================
+六、校验 / Verification
+============================================================
+- 语法检查：arm-none-eabi-gcc -std=gnu11 -fsyntax-only -Wall
+  oled_page.c / running_logic.c / syncif.c / oled_task.c / cn_fonts.c 全部 EXIT=0
+- 换行与编码：所有改动文件保持 CRLF 行尾、UTF-8 编码，无裸 LF
+- 字库：脚本逐像素解码自校验通过；ASCII 段与旧版逐字节一致；U8G2 查找路径验证可命中
+- 英文串宽度：按原厂等宽字体核算，最坏 "Rebooting..."(ncenB18) 约 216px < 256px 屏宽
+- 未做整包链接（无 ninja/make 环境），建议在 STM32CubeIDE 做 Clean+Rebuild 并实机确认
+
+Syntax checks pass for all touched .c files; CRLF and UTF-8 preserved; the font was
+regenerated and verified pixel-by-pixel; the widest English string fits the 256 px panel.
+A full STM32CubeIDE Clean+Rebuild and an on-device check are still recommended.
+
+============================================================
+七、衍生版本状态 / Derivative projects
+============================================================
+temporary\V1.0，分体阀版本      1.1.4i   未同步本版本（无双语功能）
+temporary\V2.0版，低速内部晶振  2.1.4i   未同步本版本（无双语功能）
+temporary\V2.0版，低速外部晶振  2.1.4e   未同步本版本（无双语功能）
+temporary\V2.2.3i，多次少供版  2.2.4i   仅同步了第四节「串口设置页说明行微调」，
+                                       未同步双语功能；如需同步请另行安排

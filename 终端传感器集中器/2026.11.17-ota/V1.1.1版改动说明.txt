@@ -1,0 +1,151 @@
+单路 sensor_read 真实采样改动说明（固件 V1.1.1）
+
+日期：2026-11-17
+版本号：1.1.1（本工程 DEVICE_FW_VER 未变，本次为功能改动）
+工程：d:\Desktop\SensorConcentrator
+型号：SENSOR-HUB-V1.0  硬件版本：V1.0
+编译产物：build/Debug/SensorConcentrator.bin（FLASH 216012B / 54.93%，RAM 66.80%）
+
+============================================================
+一、改动背景与问题现象
+============================================================
+现场现象：传感器发生突发（voltage_flag 由 0→1）并上报一次后，若传感器
+之后未主动上报"未触发"帧（voltage_flag=0），则本设备缓存中的边沿基线
+last_voltage_flag 会一直保持在 1。
+
+后果：下一次真实突发到来时，voltage_flag 仍是 1，边沿检测条件
+    e->has_data && e->last_voltage_flag == 0 && sd->voltage_flag == 1
+不再成立，该次触发被筛掉不报 —— 表现为"两次/多次触发只上报了一次"。
+
+根因定位（只读核对，未改此处）：
+  上报触发为 2026-09-18 重构的"边沿触发"机制：SensorHub_Task 收到帧只调
+  sensor_cache_update() 更新 g_sensor_cache[8] 并检测 voltage_flag 0→1 边沿，
+  仅"变化的那一路"上报。基线是否回落到 0，完全依赖传感器主动上报未触发帧，
+  不可靠。
+
+原 sensor_read 行为：纯读缓存，不发任何 RS485 帧。
+  sensor_id == 0    → tcp_send_sensor_data_all() 回传全部 8 路缓存
+  sensor_id = 1..8  → SensorHub_GetCached() 回传该路缓存
+  注释明确写"集中器直接回传缓存，不阻塞网络线程"。
+  因此网关读到的是上次收到的旧值，无法借此复位基线。
+
+============================================================
+二、方案与数据流
+============================================================
+方案：仅对"网关读取单个指定 ID"做真实读取；读全部（sensor_id=0）保持原逻辑。
+
+  网关注油任务开始前下发 sensor_read(sensor_id=N, 1..8)
+    → 本设备先发一帧 FC04 真实查询该路传感器
+    → 应答帧经 ISR → 帧队列 → SensorHub_Task 解析
+    → sensor_cache_update() 用真实状态刷新缓存（voltage_flag 基线被拉回真实值）
+    → 唤醒等待中的 lwIP 线程
+    → 用更新后的缓存回包（真实 voltage_flag）
+
+效果：传感器已恢复（真实 voltage_flag=0）时，基线被复位为 0，
+下次突发的 0→1 能被边沿检测正常上报，消除漏报。
+
+选择"同步等真实值再回包"：lwIP 线程发出查询后阻塞，等应答入缓存再读回，
+使本次响应即为传感器真实状态，而非旧缓存。
+
+============================================================
+三、代码实现（手术刀式，6 处）
+============================================================
+1) UserCode/Drivers/RS485/sensor_hub.c —— 新增 FC04 采样同步量
+   紧随 FC03 读同步 g_rd_sync 之后新增：
+     typedef struct {
+         volatile uint8_t  armed;      /* 1=正在等待该路 FC04 采样应答 */
+         SemaphoreHandle_t sem;
+     } ShSampleSync_t;
+     static ShSampleSync_t g_sample_sync[SENSOR_HUB_COUNT];
+   机制与现有 g_rd_sync（FC03 读回）一致，不改动既有 FC03/FC06 同步逻辑。
+
+2) sensor_hub.c —— SensorHub_Init() 创建信号量
+   在 g_rd_sync 初始化之后，为 8 路各创建一个二值信号量（幂等判断），
+   armed 初值 0。调试口占用路同样创建，调用时由参数检查拦下。
+
+3) sensor_hub.c —— SensorHub_Task 帧处理中 give 信号量
+   在 sensorhub_parse_frame() 成功、sensor_cache_update() 调用"之后"加入：
+     if (g_sample_sync[f.sensor_id - 1].armed) {
+         g_sample_sync[f.sensor_id - 1].armed = 0;
+         xSemaphoreGive(g_sample_sync[f.sensor_id - 1].sem);
+     }
+   ⚠ give 必须在 sensor_cache_update() 之后，确保等待方读回的是刚更新的真实值。
+
+4) sensor_hub.c —— 新增 SensorHub_SampleNow(sid)
+   置于 SensorHub_Query() 之后：
+     int8_t SensorHub_SampleNow(uint8_t sensor_id);
+   流程：参数/调试口检查 → armed=1 并清残留计数（须在发帧前，应答随即经
+   ISR 到达）→ SensorHub_Query() 发 FC04 → 阻塞等 sem，上限
+   SH_MODE_RESP_TIMEOUT_MS(500ms) → 清 armed → 返回结果。
+   返回码：0=应答已解析入缓存；-1=参数/资源/发送错；-2=调试口占用；
+           -3=应答超时（离线/传感器不应答查询）。
+
+5) UserCode/Drivers/RS485/sensor_hub.h —— 对外声明
+   在 SensorHub_Query() 声明之后新增 SensorHub_SampleNow() 声明及返回码注释，
+   注明阻塞上限 500ms、可在 lwIP 线程调用（与 SensorHub_WriteReg 同款先例）。
+
+6) UserCode/Drivers/ETH/net_comm_task.c —— 单路 sensor_read 分支
+   在 sensor_id 为 1..8 的处理处，改为先采样再回包：
+     int8_t smp = SensorHub_SampleNow(read_sensor_id);
+     if (smp != 0) LOG_NET("sensor_read S%u sample fail(%d), fallback to cached\r\n", ...);
+     SensorHub_GetCached(read_sensor_id, &sd);   /* 成功=真实值，失败=旧缓存 */
+     sd.sensor_id = read_sensor_id;
+     tcp_send_sensor_data(&sd);
+   sensor_id == 0（全量）分支完全未动。
+
+============================================================
+四、兼容性与边界行为
+============================================================
+1. 全量读取 sensor_id=0：保持原逻辑（读缓存），不做真实采样，不阻塞。
+
+2. CH1（SH_DEBUG_UART_ID=1，调试打印口占用）：SensorHub_SampleNow 返回 -2，
+   回退到旧缓存并打日志。该路无法真实采样，属预期限制。
+
+3. 采样失败/超时（返回 -3）：回退到旧缓存并打日志，协议仍保证有应答，
+   不会让网关等待超时。
+
+4. lwIP 线程阻塞上限 500ms，与既有 mode_set 命令调用 SensorHub_WriteReg
+   的阻塞语义一致，已有先例，不会长期占用网络线程。
+
+5. 报文签名/字段/字典序未改：回包仍走原 tcp_send_sensor_data()，签名源串
+   与字段顺序保持原样，网关侧无需改动解析。
+
+============================================================
+五、编译验证
+============================================================
+本机增量构建通过（arm-none-eabi-gcc + ninja）：
+  cmake --build build/Debug
+  结果：无报错、无告警
+  FLASH 216012 B / 384 KB（54.93%）
+  RAM   262656 B / 384 KB（66.80%）
+  较改动前 FLASH 增加约 1880 B（新增同步量与采样函数）。
+
+============================================================
+涉及文件
+============================================================
+  UserCode/Drivers/RS485/sensor_hub.c
+  UserCode/Drivers/RS485/sensor_hub.h
+  UserCode/Drivers/ETH/net_comm_task.c
+
+============================================================
+注意
+============================================================
+1. 本方案成立的前提：传感器在"问答模式"下会应答 FC04 查询帧（读 0x0000
+   起全部寄存器）。若传感器被设为纯主动上报模式且不应答查询，单路采样会
+   等满 500ms 后回退缓存，基线仍无法复位。需现场取一路实测：下发单路
+   sensor_read，观察是否打印 "sensor_read S%u sample fail(-3)..."；若持续
+   -3，先把该路 mode 切为问答模式（mode=0）再试。
+
+2. 采样瞬间若传感器恰好处于触发态（真实 voltage_flag=1），sensor_cache_update()
+   会按既有逻辑触发一次 0→1 边沿上报，同时 sensor_read 也回包 —— 属真实
+   触发，非重复错误；网关注油前读取一般处于未触发态，不会遇到。
+
+3. 本次仅修改"设备侧固件"。网关侧如需配合，只需按现状下发
+   sensor_read(sensor_id=N) 即可，无需新增字段或改签名规则。
+
+4. 本次会话另做了两项只读诊断，未改代码，供参考（不属于本次改动）：
+   - 升级应答延迟约 13s：ota_handle_upgrade_start() 在发 upgrade_ack 前
+     同步擦除 firmware_a 384KB（3×128KB 扇区），且 FAL erase 期间关全局
+     中断，属设备侧处理延迟，非协议/网络问题。
+   - 升级应答 ts 恒为 2026-09-01 占位值：NTP(192.168.0.10) 未同步，RTC
+     停在初值（已知问题，与本次改动无关）。

@@ -1,0 +1,54 @@
+V2.1.4i版说明.txt版说明（LUB-CTRL-V2.0i，低速内部晶振版）
+
+当前版本号：2.1.4i（宏 DEVICE_FW_VER = "2.1.4i"，完整标识 V2.1.4i版说明.txt）
+日期：2026-11-19
+来源：从主工程 d:////Desktop////H743_VS_GCC_IDE 同步显示汉化
+说明：本文件为 V2.1.4i版说明.txt 版本说明。上一版本说明见同目录《V2.1.3i版说明.txt》，旧文件保留未动。
+
+============================================================
+本次变更：显示汉化同步 + 版本号末位 +1
+============================================================
+版本号：2.1.3i -> 2.1.4i
+文件：UserCode/Logic/project_config.h（第 72 行）
+  #define DEVICE_FW_VER  "2.1.3i"  ->  "2.1.4i"
+DEVICE_MODEL（LUB-CTRL-V2.0i）保持不变，i/e 后缀由型号宏体现。
+
+============================================================
+一、显示汉化（同步自主工程）
+============================================================
+1. 新增中文点阵字库（位于 UserCode/Drivers/Oled/）：
+   - cn_fonts.c / cn_fonts.h：中文点阵（cn_font_12/16/16_bold），含 179 汉字 + ASCII
+   - cn_font_gen.py：字库离线生成脚本（GDI32 取模 + RLE 压缩）
+   - CMake 以 GLOB 自动收集 Drivers/Oled/*.c，无需改 CMakeLists
+2. UserCode/Logic/oled_page.c / oled_page.h：
+   - 菜单项、页面标题、数据标签、状态栏、编辑提示、动态消息全面英译中
+   - 绘制 API 由 u8g2_DrawStr/GetStrWidth 改为 u8g2_DrawUTF8/GetUTF8Width
+   - 字体切换到 cn_font 中文点阵；品牌标题"博驰润滑科技"用 cn_font_16_bold
+   - 宏 DEVICE_LOGO/MENU_TITLE/MENU_STATUS 汉化
+3. UserCode/Logic/running_logic.c：
+   - 37 处 show_oled_msg() 显示串汉化（如 motor error -> 电机故障、run task -> 执行任务）
+   - 日志 printf/logInfo、协议上报 inline_report_result 字符串均未改动
+4. U8G2_WITH_UNICODE 开关：本版本此前已启用，无需改动
+
+============================================================
+二、迁移方式（按版本差异）
+============================================================
+本版本 oled_page.c 为较老功能快照，按函数块对齐 + 字符串映射精准迁移，保留原有功能逻辑。
+各改动文件均保留原 CRLF 行尾，按 hunk/锚点合并，未整文件覆盖功能逻辑。
+
+============================================================
+涉及文件汇总
+============================================================
+  UserCode/Drivers/Oled/cn_fonts.c        （新增/更新）
+  UserCode/Drivers/Oled/cn_fonts.h        （新增/更新）
+  UserCode/Drivers/Oled/cn_font_gen.py    （新增/更新）
+  UserCode/Logic/oled_page.c              （显示汉化）
+  UserCode/Logic/oled_page.h              （字库引用 + 宏汉化）
+  UserCode/Logic/running_logic.c          （消息串汉化）
+  UserCode/Logic/project_config.h         （版本号 2.1.3i -> 2.1.4i）
+
+============================================================
+校验
+============================================================
+  - 4 个改动文件 arm-none-eabi-gcc -std=gnu11 -fsyntax-only 全部 EXIT=0
+  - 版本号 diff 仅第 72 行一处；CRLF 行尾保持

@@ -1,0 +1,135 @@
+V1.2.0i版说明.txt（LUB-CTRL-V1.0 分体阀多次少供版）
+
+当前版本号：1.2.0i（宏 DEVICE_FW_VER = "1.2.0i"，工程路径 d:\Desktop\temporary\V1.2.0i，分体阀多次少供版\H743_VS_GCC_IDE）
+上一版本号：1.1.5i
+日期：2026-11-20
+型号标识：DEVICE_MODEL = "LUB-CTRL-V1.0"（保留，未改）
+移植来源：主工程 d:\Desktop\H743_VS_GCC_IDE（LUB-CTRL-V2.0i / FW 2.2.6i）
+说明：本版以主工程 V2.0i 为基准，将分体阀版从 1.1.5i 升级为「多次少供版」。
+      除两项明确保留的差异（Q 表相位 90°、不引入通讯测试模式）外，以太网协议、
+      分次供油策略、OLED 中英双语、心跳字段等全部按主工程对齐。协议由 V1.x 升为 V2.8
+      （删除 task_request 上行链路）。原文件已备份到本工程 _backup/port_v2.0i_20261120/（19 个文件）。
+
+Current: 1.2.0i | Previous: 1.1.5i | Date: 2026-11-20 | Model: LUB-CTRL-V1.0 (unchanged).
+Ported from the main project (LUB-CTRL-V2.0i / FW 2.2.6i) into a "multi-dose oil supply"
+variant. Except for two deliberately preserved differences (the 90-degree Q-table phase
+and the omission of the communication test mode), Ethernet protocol, dosing strategy,
+OLED bilingual UI and heartbeat fields are aligned with the main project. Protocol bumped
+to V2.8 (task_request uplink removed). Originals backed up in _backup/port_v2.0i_20261120/.
+
+============================================================
+0. 版本号 / Version number
+============================================================
+版本号：1.1.5i -> 1.2.0i
+文件：UserCode/Logic/project_config.h（DEVICE_FW_VER 宏）。该宏为固件版本唯一来源，
+上位机上报、OLED 关于页、OTA 旧版本记录同步生效。
+型号 DEVICE_MODEL 保持 "LUB-CTRL-V1.0" 不变（目录名中的 V1.2.0i 指版本号，非型号）。
+
+============================================================
+一、保留不改的部分（相对主工程的差异，按需求固化）
+============================================================
+1. Q 位置表相位（var_init.c / init_Q_motor_loc_list）
+   - 活动 Q 表 pipe 序列保持分体阀的 2,0,1,0 ×3（本工程原来是 0,1,0,2 ×3）
+   - 两版相差 90° 相位，属分体阀硬件时序，不随本次移植改变
+   - 注释掉的旧表本就为 2,0,1,0，与主工程无冲突，未动
+2. 反转点 case（running_logic.c / q_motor_run_close、q_motor_run_open）
+   - 保持分体阀的 case 8 / case 2（主工程为 case 9 / case 3），共 4 处
+   - 与 Q 表相位配套；错误码 switch 的 case 3 未误改
+3. 相位诊断代码（oled_page.c / 单元测试页）
+   - 保留分体阀独有 print_q_sen_map()（串口 [SENMAP] id/pipe/g OK/NG）与
+     show_q_sen_map()（OLED 状态栏 id2 p1 s01 g2 NG），及 CW/CCW/循环末尾 3 处调用
+   - 该组函数用于校验 pipe 映射与传感器组合值，属相位配套诊断
+4. 通讯测试模式（完全不引入）
+   - 无 g_offline_sim / net_test_ctrl / test_oil_filling_task / TEST_INJ_* 等符号
+   - 保留真实 injector_task 启动（主工程为停掉真实任务、伪造 READY 态），
+     但引入 task_scheduler_task（100ms 节拍：在线逐份/离线降级触发）
+
+Preserved (deliberate differences from main project): the Q-table pipe phase (2,0,1,0),
+matching motor direction switch cases (8/2), the phase self-check helpers print_q_sen_map /
+show_q_sen_map, and NO communication test mode (real injector_task stays active while the
+dosing scheduler task is introduced).
+
+============================================================
+二、按主工程移植的部分 / Ported from main project
+============================================================
+1. 以太网协议 V2.8（net_comm_task.c/.h）
+   - 删除 task_request 上行链路：g_task_request_buf、tcp_send_task_request()、
+     timer_req_send_task()、xTimerReqQueue 及注油定时回调入队
+   - execute_result 语义改为主工程的 0/1/2/3，并原样回显 sub_index / sub_total
+   - 入站验签按 key 字典序规范化：task_order 用 json_sort_keys 递归排序
+   - 失败/重启 execute_result 统一封装
+2. 多次少供核心（net_comm_task.c）
+   - 分次调度表 g_sched_list[24]（回收语义=同时挂起上限）
+   - 去重环 g_dedup_ring[48]，去重键为复合键 (task_id, sub_index)，避免同轮多批被误杀
+   - 离线整轮 g_offline_round_sched[8]、槽3回报上下文 g_slot3_ctx
+   - task_scheduler_task() 调度任务
+3. OLED 中英双语（oled_lang.h / oled_page.c/.h / oled_task.c / syncif.c/.h / 字库）
+   - 新增 UserCode/Logic/oled_lang.h：g_oled_lang + OLANG(cn,en) 宏
+   - 独立 FlashDB key "oled_lang"（"0"=中文 / "1"=英文），经 sysdb_get_u8/set_u8
+     读写，不进 main_config、不碰 Modbus 映射
+   - 系统设置二级菜单新增「语言 / Language」入口；一级菜单由 8 项精简为 6 项
+   - 英文恢复原厂字体与基线，中文沿用 cn_font_* + u8g2_DrawUTF8()
+   - 字库 cn_fonts.c/.h 补「语」「言」二字，字符数 179 -> 181
+4. 心跳与系统
+   - 心跳 uptime 字段（本工程 1.1.5i 已同步，本版保持一致）
+   - running_logic.c 大量 show_oled_msg() 文案套用 OLANG()，英文复用汉化前原串
+   - var_init.c 不再填 deviceSN/ipAddress 默认值
+   - motor_zdt.c 仅带入 3 处 addr*ex_addr 帧 ID 隐患注释，逻辑未改
+   - gpio.c 的 PB4(NJTRST，即 DO_INPUT_1_Pin) 两工程统一为 GPIO_PULLDOWN（下拉），
+     .ioc 中 PB4 同步设 GPIO_PuPd=GPIO_PULLDOWN，避免 CubeMX 重新生成时回退
+   - .ioc / .mxproject 按主工程对齐；链接脚本文件名大小写差异（STM32H743XG_FLASH.ld vs
+     STM32H743xG_flash.ld）内容相同，Windows 下不区分大小写，属工程原有状态未改
+
+============================================================
+三、涉及文件汇总 / Modified files
+============================================================
+  与本工程（主工程 V2.0i）最终仍有差异的 7 个文件，全部为上述保留项/预期差异：
+  UserCode/Logic/project_config.h        （版本号 1.2.0i，型号保留 V1.0）
+  UserCode/Logic/var_init.c              （Q 表 pipe 相位 2,0,1,0）
+  UserCode/Logic/running_logic.c         （反转点 case 8/2，4 处）
+  UserCode/Logic/oled_page.c             （相位诊断 print/show_q_sen_map）
+  Core/Src/freertos.c                    （真实 injector_task，无通讯测试任务）
+  UserCode/Drivers/ETH/net_comm_task.c   （剥离通讯测试模式：g_offline_sim/net_test_ctrl/test_oil_filling_task）
+  UserCode/Drivers/ETH/net_comm_task.h   （剥离 test_oil_filling_task 声明）
+
+  本次实际改写的全部文件（19 个，原版备份于 _backup/port_v2.0i_20261120/）：
+  .mxproject, H743_VS_GCC_IDE.ioc
+  Core/Src/freertos.c, Core/Src/gpio.c
+  UserCode/Logic/{oled_lang.h,oled_page.c,oled_page.h,oled_task.c,project_config.h,
+                  running_logic.c,syncif.c,syncif.h,var_init.c}
+  UserCode/Drivers/ETH/{net_comm_task.c,net_comm_task.h}
+  UserCode/Drivers/Oled/{cn_font_gen.py,cn_fonts.c,cn_fonts.h}
+  UserCode/Drivers/Motor/motor_zdt.c
+
+============================================================
+四、校验 / Verification
+============================================================
+- 全量逐文件对比（忽略 CR）：移植后两工程源码仅 7 个文件有差异，均为保留项/预期差异，
+  无遗漏、无误改
+- 单文件语法检查（arm-none-eabi-gcc -std=gnu11 -fsyntax-only -Wall）：改动的 10 个 .c 文件
+  全部 EXIT=0 / errors=0（freertos.c、gpio.c、net_comm_task.c、oled_page.c、oled_task.c、
+  syncif.c、running_logic.c、var_init.c、cn_fonts.c、motor_zdt.c）
+- 通讯测试模式零残留：g_offline_sim / net_test_ctrl / test_oil_filling_task / TEST_INJ_*
+  在 UserCode/ 与 Core/ 下均无引用（net_comm_task.c/.h 中两处仅为注释说明）
+- task_request 上行链路零残留（两处注释说明除外）
+- 改写文件 CRLF 与 UTF-8 编码保持正常
+- 未做整包 CMake+Ninja 链接构建、未做实机烧录验证：建议用 STM32CubeIDE Clean+Rebuild 一次，
+  并实机确认双语切换、掉电保持、多次少供注油与相位诊断（id p s g NG）
+
+============================================================
+五、同步关系 / Cross-project sync
+============================================================
+本版移植源头为主工程 V2.2.6i（d:\Desktop\H743_VS_GCC_IDE，型号 LUB-CTRL-V2.0i）。
+本次仅修改「V1.2.0i，分体阀多次少供版」工程；其他衍生版（V2.0 低速内部晶振
+2.1.5i、V2.0 低速外部晶振 2.1.5e、SensorConcentrator_Test 等）本次未改。
+后续若主工程协议再变更，本工程需重新对齐，并再次核对上述 4 项保留差异是否被覆盖。
+
+============================================================
+六、升级前注意 / Before upgrading
+============================================================
+- 协议由 V1.x 升为 V2.8：网关侧须支持新 execute_result 语义（0/1/2/3 + sub_index/sub_total
+  回显）与删除 task_request 后的交互，否则联调会失败
+- 心跳验签：如网关尚未纳入 uptime 键（1.1.5i 起引入），升级前须先完成网关同步
+- OLED 语言值是独立 FlashDB key，升级后首次启动沿用原设置；如需默认中文请确认 oled_lang
+- PB4 NJTRST（DO_INPUT_1_Pin）两工程统一为 GPIO_PULLDOWN，gpio.c 与 .ioc 已同步；
+  若后续用 CubeMX 重新生成代码，请确认 .ioc 中的 GPIO_PuPd=GPIO_PULLDOWN 未被覆盖

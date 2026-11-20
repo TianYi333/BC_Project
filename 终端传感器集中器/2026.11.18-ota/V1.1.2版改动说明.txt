@@ -1,0 +1,215 @@
+V1.1.2 版改动说明（主工程 SENSOR-HUB-V1.0）
+
+日期：2026-11-18
+版本号：1.1.2
+工程：d:\Desktop\SensorConcentrator
+型号：SENSOR-HUB-V1.0  硬件版本：V1.0
+编译产物：build/Debug/SensorConcentrator.bin（FLASH 214868B / 54.64%，RAM 66.72%）
+
+说明：本次改动分两天完成，内容连续，均围绕"传感器 voltage_flag 漏报"这一
+      现场问题：11-17 完成"单路读取改真实采样"，11-18 在此基础上补充
+      "边沿基线复位"（最终方案）。下述第二、三节为最终实现状态。
+
+============================================================
+一、改动背景与问题现象
+============================================================
+现场现象：传感器发生突发（voltage_flag 由 0→1）并上报一次后，若传感器
+之后未主动上报"未触发"帧（voltage_flag=0），则本设备缓存中的边沿基线
+last_voltage_flag 会一直保持在 1。
+
+后果：下一次真实突发到来时，voltage_flag 仍是 1，边沿检测条件
+    e->has_data && e->last_voltage_flag == 0 && sd->voltage_flag == 1
+不再成立，该次触发被筛掉不报 —— 表现为"两次/多次触发只上报了一次"。
+
+根因定位：
+  上报触发为 2026-09-18 重构的"边沿触发"机制：SensorHub_Task 收到帧只调
+  sensor_cache_update() 更新 g_sensor_cache[8] 并检测 voltage_flag 0→1 边沿，
+  仅"变化的那一路"上报。基线是否回落到 0，完全依赖传感器主动上报未触发帧，
+  不可靠。
+
+原 sensor_read 行为：纯读缓存，不发任何 RS485 帧。
+  sensor_id == 0    → tcp_send_sensor_data_all() 回传全部 8 路缓存
+  sensor_id = 1..8  → SensorHub_GetCached() 回传该路缓存
+  注释明确写"集中器直接回传缓存，不阻塞网络线程"。
+  因此网关读到的是上次收到的旧值，无法借此复位基线。
+
+★ 关键认知（本方案成立的硬约束）：
+  传感器的 voltage_flag 是**锁存式标志位**，且位于寄存器 0x0000，
+  是**只读输入寄存器（FC04）** —— 集中器**无法远程清除传感器侧的标志位**。
+  因此仅靠"真实读回值"无法复位基线（读回来仍是 1），必须由集中器显式
+  复位自身的"边沿基线"。
+
+============================================================
+二、最终方案与数据流
+============================================================
+方案：仅对"网关读取单个指定 ID"做真实读取 + 基线复位；读全部（sensor_id=0）
+      保持原逻辑不变。
+
+  网关注油任务开始前下发 sensor_read(sensor_id=N, 1..8)
+    → 本设备发一帧 FC04 真实查询该路传感器
+    → 应答帧经 ISR → 帧队列 → SensorHub_Task 解析
+    → sensor_cache_update() 用真实状态刷新缓存
+    → 唤醒等待中的 lwIP 线程（≤500ms）
+    → SensorHub_ResetVFlagBase()：复位"边沿基线"，重新武装该路
+    → 用更新后的缓存回包（voltage_flag 为传感器真实值，未篡改）
+
+两个状态被刻意解耦，这是本方案的核心：
+  ┌──────────────────────┬────────────────────────────────────────┐
+  │ last_voltage_flag    │ 边沿检测基线 = "这次触发是否已上报过"    │
+  │ （集中器内部状态）    │ → 复位为 0：该路下次真实突发可被检出上报  │
+  ├──────────────────────┼────────────────────────────────────────┤
+  │ data.voltage_flag    │ 传感器真实状态 → 上报给网关，不篡改      │
+  │ （上报给网关的值）    │ → 网关能看到"传感器现在仍报 1"           │
+  └──────────────────────┴────────────────────────────────────────┘
+
+效果：即使传感器内部标志位一直为 1 不自清，集中器基线仍被复位为 0，
+      下一次真实突发（传感器清零后又变 1）能被边沿检测正常上报，消除漏报；
+      同时回包如实反映传感器当前状态，网关可自行判断如何处置。
+
+============================================================
+三、代码实现（手术刀式，10 处）
+============================================================
+【11-17：真实采样，6 处】
+
+1) UserCode/Drivers/RS485/sensor_hub.c —— 新增 FC04 采样同步量
+   紧随 FC03 读同步 g_rd_sync 之后新增：
+     typedef struct {
+         volatile uint8_t  armed;      /* 1=正在等待该路 FC04 采样应答 */
+         SemaphoreHandle_t sem;
+     } ShSampleSync_t;
+     static ShSampleSync_t g_sample_sync[SENSOR_HUB_COUNT];
+   机制与现有 g_rd_sync（FC03 读回）一致，不改动既有 FC03/FC06 同步逻辑。
+
+2) sensor_hub.c —— SensorHub_Init() 创建信号量
+   在 g_rd_sync 初始化之后，为 8 路各创建一个二值信号量（幂等判断），
+   armed 初值 0。调试口占用路同样创建，调用时由参数检查拦下。
+
+3) sensor_hub.c —— SensorHub_Task 帧处理中 give 信号量
+   在 sensorhub_parse_frame() 成功、sensor_cache_update() 调用"之后"加入：
+     if (g_sample_sync[f.sensor_id - 1].armed) {
+         g_sample_sync[f.sensor_id - 1].armed = 0;
+         xSemaphoreGive(g_sample_sync[f.sensor_id - 1].sem);
+     }
+   ⚠ give 必须在 sensor_cache_update() 之后，确保等待方读回的是刚更新的真实值。
+
+4) sensor_hub.c —— 新增 SensorHub_SampleNow(sid)
+   置于 SensorHub_Query() 之后：
+     int8_t SensorHub_SampleNow(uint8_t sensor_id);
+   流程：参数/调试口检查 → armed=1 并清残留计数（须在发帧前，应答随即经
+   ISR 到达）→ SensorHub_Query() 发 FC04 → 阻塞等 sem，上限
+   SH_MODE_RESP_TIMEOUT_MS(500ms) → 清 armed → 返回结果。
+   返回码：0=应答已解析入缓存；-1=参数/资源/发送错；-2=调试口占用；
+           -3=应答超时（离线/传感器不应答查询）。
+
+【11-18：边沿基线复位，4 处】
+
+5) sensor_hub.c —— 缓存结构体新增 vflag_reset_src
+   在 sensor_cache_entry_t 中新增：
+     uint8_t vflag_reset_src;
+   含义：记录"复位基线时传感器的真实状态"。为 1 = 传感器内部标志位仍锁存
+   为 1，此时复位基线后紧接着来的同源 1 帧属"同一标志位的延续"而非新突发，
+   由 sensor_cache_update() 抑制一次，避免把同一次触发重复上报。
+
+6) sensor_hub.c —— sensor_cache_update() 边沿判定加抑制
+   原：if (e->has_data && e->last_voltage_flag == 0 && sd->voltage_flag == 1)
+           trigger = 1;
+   改：条件不变，命中后判 e->vflag_reset_src：
+         若 != 0 → 抑制本次上报并清 0（复位后的首个同源 1，非新突发）
+         若 == 0 → 正常 trigger = 1（真实新突发）
+   ★ 真正的再次突发必然先经历 0 帧，故不会被此逻辑误吞。
+
+7) sensor_hub.c —— 新增 SensorHub_ResetVFlagBase(sid)
+   置于 SensorHub_GetCached() 之后：
+     int8_t SensorHub_ResetVFlagBase(uint8_t sensor_id);
+   加锁后执行：
+     e->vflag_reset_src  = (e->data.voltage_flag != 0) ? 1U : 0U;
+     e->last_voltage_flag = 0;        /* 重新武装 */
+   ⚠ 不修改 data.voltage_flag / alarm_type / temperature / temp_flag 等任何
+     上报值与测量值 —— 这正是"方案 A"与"直接把保存的值改成 0"的区别。
+
+8) sensor_hub.h —— 声明 SensorHub_ResetVFlagBase() 并注明用途。
+
+9) net_comm_task.c —— 单路 sensor_read 分支
+   在 sensor_id 为 1..8 的处理处，改为：
+     int8_t smp = SensorHub_SampleNow(read_sensor_id);
+     if (smp != 0) LOG_NET("sensor_read S%u sample fail(%d), fallback to cached\r\n", ...);
+     SensorHub_ResetVFlagBase(read_sensor_id);   /* 复位边沿基线，重新武装 */
+     SensorHub_GetCached(read_sensor_id, &sd);
+     sd.sensor_id = read_sensor_id;
+     tcp_send_sensor_data(&sd);
+   sensor_id == 0（全量）分支完全未动。
+
+============================================================
+四、兼容性与边界行为
+============================================================
+1. 全量读取 sensor_id=0：保持原逻辑（读缓存），不做真实采样、不复位基线、
+   不阻塞。
+
+2. CH1（SH_DEBUG_UART_ID=1，调试打印口占用）：SensorHub_SampleNow 返回 -2，
+   回退到旧缓存并打日志；基线复位仍会执行（不需要传感器应答）。
+   该路无法真实采样，属预期限制。
+
+3. 采样失败/超时（返回 -3）：回退到旧缓存并打日志，协议仍保证有应答。
+   ⚠ 注意：基线复位不依赖采样是否成功 —— 即使读不到真实值，该路仍会被
+   重新武装，下一次真实突发照样能上报。这是本方案能覆盖"锁存式传感器"
+   的关键（11-17 版本仅靠真实读回值，锁存场景下不成立）。
+
+4. lwIP 线程阻塞上限 500ms，与既有 mode_set 命令调用 SensorHub_WriteReg
+   的阻塞语义一致，已有先例，不会长期占用网络线程。
+
+5. 报文签名/字段/字典序未改：回包仍走原 tcp_send_sensor_data()，签名源串
+   与字段顺序保持原样，网关侧无需改动解析。
+
+6. 上报给网关的 voltage_flag 语义变化（重要）：
+   网关下发单路 sensor_read 后，回包中的 voltage_flag 为**传感器真实值**
+   （可能仍为 1），而不是被强制清 0。网关若依赖"读取返回 0 = 无未处理突发"
+   的假设，需相应调整：判断"是否已处理"应以集中器上报的 0→1 边沿事件
+   为准，而非本次读取的应答值。
+
+============================================================
+五、编译验证
+============================================================
+本机完整重建通过（arm-none-eabi-gcc + ninja）：
+  cmake --build build/Debug -- -j1
+  结果：无报错、无告警
+  FLASH 214868 B / 384 KB（54.64%）    [text 214856 + data 12]
+  RAM   262368 B / 384 KB（66.72%）    [data 0 + bss 259832]
+  符号核验：SensorHub_SampleNow / SensorHub_ResetVFlagBase 均已链接进 elf。
+  固件内嵌版本串核验：bin 中为 "1.1.2"。
+
+  ⚠ 构建注意：本工程全量重建时 ninja 并行编译会卡死（多个 gcc/cc1 进程
+    全部阻塞、CPU≈0、长时间零进度，SIGTERM 后残留进程仍在）。请使用
+    `cmake --build build/Debug -- -j1` 串行构建；卡死后须先 kill 掉
+    ninja/cmake/arm-none-eabi-gcc/cc1 进程再重跑。
+
+============================================================
+涉及文件
+============================================================
+  UserCode/Drivers/RS485/sensor_hub.c
+  UserCode/Drivers/RS485/sensor_hub.h
+  UserCode/Drivers/ETH/net_comm_task.c
+  UserCode/Logic/project_config.h      （版本号 1.0.9 → 1.1.2）
+
+============================================================
+注意
+============================================================
+1. 前提核实：传感器在"问答模式"下应会应答 FC04 查询帧（读 0x0000 起全部
+   寄存器）。若传感器为纯主动上报模式且不应答查询，单路采样会等满 500ms
+   后回退缓存 —— 但基线复位仍然生效，漏报问题可解决，只是回包值为旧缓存。
+   现场取一路实测：下发单路 sensor_read，观察是否打印
+   "sensor_read S%u sample fail(-3)..."。
+
+2. 重复上报防护（vflag_reset_src）：复位基线后，传感器若紧接着再上报一帧
+   voltage_flag=1（内部标志位仍未清），该帧被抑制一次、不上报，避免把
+   同一次触发报两遍。真正的再次突发必然先经历 0 帧，故不会被误吞。
+   需现场确认：既不漏报、也不重复。
+
+3. 网关侧配合：仅需按现状下发 sensor_read(sensor_id=N)，无需新增字段或
+   改签名规则。唯一需注意的是第 4 节第 6 条的语义变化。
+
+4. 本次会话另做了两项只读诊断，未改代码，供参考（不属于本次改动）：
+   - 升级应答延迟约 13s：ota_handle_upgrade_start() 在发 upgrade_ack 前
+     同步擦除 firmware_a 384KB（3×128KB 扇区），且 FAL erase 期间关全局
+     中断，属设备侧处理延迟，非协议/网络问题。
+   - 升级应答 ts 恒为 2026-09-01 占位值：NTP(192.168.0.10) 未同步，RTC
+     停在初值（已知问题，与本次改动无关）。

@@ -1,0 +1,76 @@
+V1.1.3版说明.txt（SENSOR-HUB-V1.0 终端传感器集中器 / STM32F767）
+
+当前版本号：1.1.3（宏 DEVICE_FW_VER = "1.1.3"，工程路径 d:\Desktop\temporary\终端传感器集中器\SensorConcentrator）
+上一版本号：1.1.2
+日期：2026-11-20
+型号标识：DEVICE_MODEL = "SENSOR-HUB-V1.0"
+说明：本文件描述 1.1.3 相对 1.1.2 的变更。本版仅一项协议变更：TCP 心跳报文
+      （type=heartbeat）新增 "uptime" 字段，上报设备自开机以来的运行时间（秒级），
+      与注油主工程 2.2.6i 的同名改动同步。其余功能未动。
+
+Current version: 1.1.3 | Previous version: 1.1.2 | Date: 2026-11-20
+Model: SENSOR-HUB-V1.0 (STM32F767). Single protocol change: the TCP heartbeat message
+now carries an integer-seconds "uptime" field, synchronized with the main project's 2.2.6i.
+
+============================================================
+0. 版本号 / Version number
+============================================================
+版本号：1.1.2 -> 1.1.3
+文件：UserCode/Logic/project_config.h（DEVICE_FW_VER 宏）。该宏为固件版本唯一来源，
+上位机上报、OLED 关于页、OTA 旧版本记录同步生效。
+
+============================================================
+一、新增：心跳报文 uptime 字段（设备运行时间）
+============================================================
+1. 字段语义
+   - 键名 "uptime"，整型，单位秒（截断取整，误差 ≤1s）
+   - 取值 HAL_GetTick()/1000（本工程 F767 时基同为 TIM7 1ms），开机为 0 点，
+     约 49.7 天回绕
+2. 修改后心跳报文示例（8 路在线状态数组）：
+   {"device_id":"...","sensor_online":[1,1,0,1,0,0,1,1],"seq":42,"status":0,
+    "ts":1795133180,"type":"heartbeat","uptime":86400,"sign":"A1B2C3D4"}
+3. 代码改动（UserCode/Drivers/ETH/net_comm_task.c 单处；本工程心跳为"排序式组包"，
+   与 LUB 系列不同，无需改头文件与结构体）
+   - tcp_send_heartbeat()：在 root 对象 "type" 键之后追加
+     cJSON_AddNumberToObject(root, "uptime", HAL_GetTick() / 1000U);
+   - 该函数签名走 cjson_sort_recursive(root) 递归字典序规范化后序列化再算 HMAC，
+     "uptime"（t<u）自动排在 "type" 之后，最终报文与签名原文顺序一致、sign 恒在末尾
+   - 顶层字段注释同步更新：device_id → sensor_online → seq → status → ts → type → uptime
+4. 协议契约影响（重要）
+   - 心跳 HMAC-SHA256 验签原文新增 "uptime":N，网关侧签名计算必须同步纳入该键，
+     否则升级后所有心跳 sign check failed。需与网关同版本发布。
+
+Heartbeat gains integer-seconds "uptime" (= HAL_GetTick()/1000, zero at boot, wraps
+after ~49.7 days). Unlike the LUB family, this project builds the heartbeat as one
+object and normalizes it with cjson_sort_recursive() before signing, so a single
+insertion after "type" suffices; no struct/header change. "uptime" sorts right after
+"type" (t < u) with "sign" appended last. The gateway MUST include "uptime" in
+heartbeat signature computation before deploying this firmware.
+
+============================================================
+二、涉及文件汇总 / Modified files
+============================================================
+  UserCode/Logic/project_config.h            （版本号 1.1.2 -> 1.1.3）
+  UserCode/Drivers/ETH/net_comm_task.c       （tcp_send_heartbeat 单处插入 + 注释更新）
+  原文件备份：_backup/net_comm_task.c.bak_hbuptime_20261120
+              _backup/net_comm_task.h.bak_hbuptime_20261120
+              _backup/project_config.h.bak_hbuptime_20261120
+
+============================================================
+三、校验 / Verification
+============================================================
+- 构建说明：原 build/Debug 缓存创建于工程移动前（d:/Desktop/SensorConcentrator），
+  已清除旧缓存并重新配置（CMake preset Debug + Ninja），全新全量编译
+- 全量构建：编译链接通过（STM32F767 内存布局），FLASH 215388 B（54.78%），RAM 66.72%
+- 产物核验：bin 内含 "1.1.3"；心跳 uptime 键字符串已入镜像
+- 中文路径已知问题：ninja 末尾 objcopy 步骤在中文目录下报
+  "No such file or directory"（改动前即存在），elf/map 正常生成，hex/bin 已由
+  手工执行 arm-none-eabi-objcopy 补齐，与 elf 内容一致
+- 建议：升级前与网关做一次心跳联合验签实测
+
+============================================================
+四、同步关系 / Cross-project sync
+============================================================
+本次 uptime 心跳改动同步应用于：主工程 2.2.6i、V1.0分体阀 1.1.5i、
+V2.0低速内部晶振 2.1.5i、V2.0低速外部晶振 2.1.5e、油泵控制器 1.1.1、本工程 1.1.3。
+SensorConcentrator_Test 与 V2.2.6i，多次少供版 未修改。
